@@ -115,6 +115,7 @@ use SIS2_ice_thm,      only : ice_temp_SIS2, SIS2_ice_thm_init, SIS2_ice_thm_end
 use SIS2_ice_thm,      only : ice_thermo_init, ice_thermo_end, T_freeze, ice_thermo_type
 use specified_ice,     only : specified_ice_dynamics, specified_ice_init, specified_ice_CS
 use specified_ice,     only : specified_ice_end, specified_ice_sum_output_CS
+use SIS_ML,            only : ML_init,register_ML_restarts,ML_inference !WG
 
 implicit none ; private
 
@@ -245,7 +246,7 @@ subroutine update_ice_slow_thermo(Ice)
   endif
 
   call slow_thermodynamics(sIST, dt_slow, Ice%sCS%slow_thermo_CSp, Ice%sCS%OSS, FIA, &
-                           Ice%sCS%XSF, Ice%sCS%IOF, sG, US, sIG)
+                           Ice%sCS%XSF, Ice%sCS%IOF, sG, US, sIG, ML=Ice%sCS%ML_CSp) !WG
   if (Ice%sCS%debug) then
     call Ice_public_type_chksum("Before set_ocean_top_fluxes", Ice, check_slow=.true.)
     call IOF_chksum("Before set_ocean_top_fluxes", Ice%sCS%IOF, sG, US, thermo_fluxes=.true.)
@@ -324,7 +325,7 @@ subroutine update_ice_dynamics_trans(Ice, time_step, start_cycle, end_cycle, cyc
                             sG, US, sIG, Ice%sCS%SIS_tracer_flow_CSp, Ice%OBC)
   else ! This is the typical branch used by SIS2.
     call SIS_dynamics_trans(sIST, Ice%sCS%OSS, FIA, Ice%sCS%IOF, dt_slow, Ice%sCS%dyn_trans_CSp, &
-                            Ice%icebergs, sG, US, sIG, Ice%sCS%SIS_tracer_flow_CSp, Ice%OBC)
+                            Ice%icebergs, sG, US, sIG, Ice%sCS%SIS_tracer_flow_CSp, Ice%OBC, ML=Ice%sCS%ML_CSp) !WG
   endif
 
  ! Set up the stresses and surface pressure in the externally visible structure Ice.
@@ -343,6 +344,12 @@ subroutine update_ice_dynamics_trans(Ice, time_step, start_cycle, end_cycle, cyc
 !  if (Ice%sCS%bounds_check) then
 !    call Ice_public_type_bounds_check(Ice, sG, "End update_ice_slow")
 !  endif
+
+  if (Ice%sCS%do_ML) then !WG
+     call enable_SIS_averaging(US%T_to_s*dt_slow, Ice%sCS%Time, Ice%sCS%ML_CSp%diag)
+     call ML_inference(sIST, sG, sIG, Ice%sCS%ML_CSp, dt_slow)
+     call disable_SIS_averaging(Ice%sCS%ML_CSp%diag)
+  endif
 
   call cpu_clock_end(ice_clock_slow) ; call cpu_clock_end(iceClock)
 
@@ -1775,6 +1782,7 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
   logical :: read_aux_restart
   logical :: split_restart_files
   logical :: is_restart = .false.
+  logical :: do_ML !WG
   character(len=16) :: stagger, dflt_stagger
   character(len=200) :: hlim_string
   type(ice_OBC_type), pointer :: OBC_in => NULL()
@@ -2004,6 +2012,8 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
   call get_param(param_file, mdl, "READ_HLIM_VALS", read_hlim_vals, &
                  "If true, read the lower limits on the ice thickness"//&
                  "categories.", default=.false.)
+  call get_param(param_file, mdl, "DO_ML", do_ML, &
+                 "Perform machine learning based bias correction.", default=.false.) !WG
 
   nCat_dflt = 5 ; if (slab_ice) nCat_dflt = 1
   opm_dflt = 0.0 ; if (redo_fast_update) opm_dflt = 1.0e-40
@@ -2054,6 +2064,7 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
     Ice%sCS%redo_fast_update = redo_fast_update
     Ice%sCS%bounds_check = bounds_check
     Ice%sCS%debug = debug_slow
+    Ice%sCS%do_ML = do_ML !WG
 
     ! Set up the ice-specific grid describing categories and ice layers.
     call set_ice_grid(sIG, US, param_file, nCat_dflt, ocean_part_min_dflt=opm_dflt)
@@ -2451,6 +2462,10 @@ subroutine ice_model_init(Ice, Time_Init, Time, Time_step_fast, Time_step_slow, 
                    sum_out_CSp=SIS_dyn_trans_sum_output_CS(Ice%sCS%dyn_trans_CSp))
     endif
 
+    if (Ice%sCS%do_ML) then !WG
+       call ML_init(Ice%sCS%Time, sG, param_file, Ice%sCS%diag, Ice%sCS%ML_CSp)
+       call register_ML_restarts(Ice%sCS%ML_CSp, sG, Ice%Ice_restart, dirs%restart_input_dir)
+    endif
 
     ! Apply corrections to the ice state, like readjusting ice categories and fixing values on land.
     ! These corrections occur here so that they can use adjust_ice_categories.
