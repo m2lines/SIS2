@@ -38,3 +38,5 @@ One you compile the source code, all you then need to do is run a simulation wit
     #override ANN_WEIGHTS = "/path/to/SIS2/ML_weights/NetworkB_weights_IO_1982-2017.nc"
 
 The flag `ML_CPL` will determine what normalization statistics are applied to the network inputs. If running in ice-ocean, set this to `False`, while if running in SPEAR, set this to `True`. You do not need to change `CNN_HALO_SIZE`. The `ML_FREQ` flag then determines how often to do inference (in seconds)---this same correction will then be applied at every timestep between inference steps. The `CNN_WEIGHTS` and `ANN_WEIGHTS` overrides are then the paths to the network weight netcdf files. These are ravelled vectors of the weights saved from PyTorch.
+
+Tip - Besides the `SIS_ML.F90` code, look for the `!WG` flags in the other SIS2 files to understand how the ML inputs are gathered and where inference is called. 
