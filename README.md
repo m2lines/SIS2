@@ -22,9 +22,9 @@ at https://gitlab.gfdl.noaa.gov.
 
 # Machine learning 
 
-To use SIS2 with ML-based bias correction, you can compile MOM6-SIS2 in coupled mode, as outlined in the (https://github.com/NOAA-GFDL/MOM6-examples/wiki/Getting-started)[MOM6-examples wiki]. You will just need to make sure that when you fork MOM6-examples, you change the path to the SIS2 repo in .gitmodules to https://github.com/m2lines/SIS2.git. Then you can do:
+To use SIS2 with ML-based bias correction, you can compile MOM6-SIS2 in coupled mode, as outlined in the [https://github.com/NOAA-GFDL/MOM6-examples/wiki/Getting-started](MOM6-examples wiki). You will just need to make sure that when you fork MOM6-examples, you change the path to the SIS2 repo in .gitmodules to https://github.com/m2lines/SIS2.git. Then you can do:
 
-git clone --recursive https://github.com/yourGithub/MOM6-examples.git MOM6-examples
-cd MOM6-examples/src/SIS2
-git checkout MLcorrections
+    git clone --recursive https://github.com/yourGithub/MOM6-examples.git MOM6-examples
+    cd MOM6-examples/src/SIS2
+    git checkout MLcorrections
 
