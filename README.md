@@ -26,7 +26,7 @@ To use SIS2 with ML-based bias correction, you can compile MOM6-SIS2 in coupled 
 
     git clone --recursive https://github.com/yourGithub/MOM6-examples.git MOM6-examples
     cd MOM6-examples/src/SIS2
-    git checkout MLcorrections
+    git checkout dev/m2lines
 
 One you compile the source code, all you then need to do is run a simulation with the correct overrides. To run in a forced ice-ocean configuration, add the following overrides:
 
