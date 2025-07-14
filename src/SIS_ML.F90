@@ -89,7 +89,7 @@ type, public :: ML_CS
   character(len=300)  :: CNN_weights !< filename of CNN weights netcdf file
   character(len=300)  :: ANN_weights !< filename of ANN weights netcdf file
 
-  real :: count !< keeps track of 5-day time window for averaging
+  real :: count !< keeps track of time window for averaging
   real, dimension(:,:,:), allocatable :: &
        CN_filtered, &      !< Time-filtered category sea ice concentration [nondim]
        dCN_restart         !< Category sea ice concentration increments [nondim]
