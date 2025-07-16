@@ -28,14 +28,24 @@ To use SIS2 with ML-based bias correction, you can compile MOM6-SIS2 in coupled 
     cd MOM6-examples/src/SIS2
     git checkout dev/m2lines
 
-One you compile the source code, all you then need to do is run a simulation with the correct overrides. To run in a forced ice-ocean configuration, add the following overrides:
+One you compile the source code, all you then need to do is run a simulation with the correct overrides. To run in a forced ice-ocean configuration, add the following overrides in your batch script:
 
+    touch $workDir/INPUT/SIS_override
+    cat > $workDir/INPUT/SIS_override << EOF
+    #override CP_SEAWATER = 3992.
+    #override CP_BRINE = 3992.
+    #override ICE_BULK_SALINITY = 0.0
+    #override ICE_RELATIVE_SALINITY = 0.17
+    #override SIS2_FILLING_FRAZIIL = T
+    #override SIS_THICKNESS_ADVECTION_SCHEME = "PCM"
+    #override SIS_CONTINUITY_SCHEME = "PCM"
+    #override SIS_TRACER_ADVECTION_SCHEME = "PPM:H3"
     #override DO_ML = True                                                                                                                                                                                          
     #override ML_CPL = False                                                                                                                                                                                        
-    #override CNN_HALO_SIZE  = 4                                                                                                                                                                                    
-    #override ML_FREQ = 86400                                                                                                                                                                                       
+    #override CNN_HALO_SIZE  = 4                                                                                                                                                                        
     #override CNN_WEIGHTS = "/path/to/SIS2/ML_weights/NetworkA_weights_IO_1982-2017.nc"                                                                                        
     #override ANN_WEIGHTS = "/path/to/SIS2/ML_weights/NetworkB_weights_IO_1982-2017.nc"
+    EOF
 
 The flag `ML_CPL` will determine what normalization statistics are applied to the network inputs. If running in ice-ocean, set this to `False`, while if running in SPEAR, set this to `True` (**Unfortunately the atmosphere and land model source code for SPEAR are not made publicly available by GFDL**). You do not need to change `CNN_HALO_SIZE`. The `ML_FREQ` flag then determines how often to do inference (in seconds)---this same correction will then be applied at every timestep between inference steps. The `CNN_WEIGHTS` and `ANN_WEIGHTS` overrides are then the paths to the network weight netcdf files. These are ravelled vectors of the weights saved from PyTorch.
 
