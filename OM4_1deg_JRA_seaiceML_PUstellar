@@ -584,7 +584,12 @@ cat > $workDir/INPUT/SIS_override << EOF
 #override SIS_THICKNESS_ADVECTION_SCHEME = "PCM"                                                                                                                                                                      
 #override SIS_CONTINUITY_SCHEME = "PCM"                                                                                                                                                                               
 #override SIS_TRACER_ADVECTION_SCHEME = "PPM:H3"                                                                                                                                                                      
-#override RESTART_CHECKSUMS_REQUIRED = False                                                                                                                                                                          
+#override RESTART_CHECKSUMS_REQUIRED = False
+#override DO_ML = True                                                                                                                                                                                          
+#override ML_CPL = False                                                                                                                                                                                        
+#override CNN_HALO_SIZE  = 4                                                                                                                                                                        
+#override CNN_WEIGHTS = "/path/to/SIS2/ML_weights/NetworkA_weights_IO_1982-2017.nc"                                                                                        
+#override ANN_WEIGHTS = "/path/to/SIS2/ML_weights/NetworkB_weights_IO_1982-2017.nc"
 EOF
 
 cd $workDir
@@ -827,7 +832,7 @@ EOF
 
 #FRE table(field_table.yaml)                                                                                                                                                                                     
 cat >> data_table <<EOF                                                                                                                                                                                          
-"ATM", "p_surf",             "psl",      "./INPUT/JRA_psl.nc",     "bilinear",   1.0                                                                                                                             
+ "ATM", "p_surf",             "psl",      "./INPUT/JRA_psl.nc",     "bilinear",   1.0                                                                                                                             
  "ATM", "p_bot",              "psl",      "./INPUT/JRA_psl.nc",     "bilinear",   1.0                                                                                                                            
  "ATM", "t_bot",              "tas",      "./INPUT/JRA_tas.nc",     "bilinear",   1.0                                                                                                                            
  "ATM", "sphum_bot",          "huss",     "./INPUT/JRA_huss.nc",    "bilinear",   1.0                                                                                                                            
@@ -846,8 +851,8 @@ cat >> data_table <<EOF
  "ICE", "dedt",               "",         "",                       "none",       2.0e-6                                                                                                                         
  "ICE", "drdt",               "",         "",                       "none",      10.0                                                                                                                            
 #JRA runoff                                                                                                                                                                                                      
-"ICE" , "runoff"        , "friver"      , "./INPUT/JRA_friver_360x320.nc", "none" ,  1.0                                                                                                                         
-"ICE" , "calving"       , "licalvf"     , "./INPUT/JRA_licalvf_360x320.nc", "none" ,  1.0                                                                                                                        
+ "ICE" , "runoff"        , "friver"      , "./INPUT/JRA_friver_360x320.nc", "none" ,  1.0                                                                                                                         
+ "ICE" , "calving"       , "licalvf"     , "./INPUT/JRA_licalvf_360x320.nc", "none" ,  1.0                                                                                                                        
 EOF                                                                                                                                                                                                              
 
 #FRE table(data_table.yaml)
