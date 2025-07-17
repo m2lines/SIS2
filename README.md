@@ -28,18 +28,8 @@ To use SIS2 with ML-based bias correction, you can compile MOM6-SIS2 in coupled 
     cd MOM6-examples/src/SIS2
     git checkout dev/m2lines
 
-One you compile the source code, all you then need to do is run a simulation with the correct overrides. An example job script can be found [here](https://github.com/m2lines/SIS2/blob/dev/m2lines/OM4_1deg_JRA_seaiceML_PUstellar). To run in a forced ice-ocean configuration, add the following overrides in your batch script:
+One you compile the source code, all you then need to do is run a simulation with the correct overrides. An example job script can be found [here](https://github.com/m2lines/SIS2/blob/dev/m2lines/OM4_1deg_JRA_seaiceML_PUstellar). To run in a forced ice-ocean configuration, see the following overrides in the job script:
 
-    touch $workDir/INPUT/SIS_override
-    cat > $workDir/INPUT/SIS_override << EOF
-    #override CP_SEAWATER = 3992.
-    #override CP_BRINE = 3992.
-    #override ICE_BULK_SALINITY = 0.0
-    #override ICE_RELATIVE_SALINITY = 0.17
-    #override SIS2_FILLING_FRAZIIL = T
-    #override SIS_THICKNESS_ADVECTION_SCHEME = "PCM"
-    #override SIS_CONTINUITY_SCHEME = "PCM"
-    #override SIS_TRACER_ADVECTION_SCHEME = "PPM:H3"
     #override DO_ML = True                                                                                                                                                                                          
     #override ML_CPL = False                                                                                                                                                                                        
     #override CNN_HALO_SIZE  = 4                                                                                                                                                                        
