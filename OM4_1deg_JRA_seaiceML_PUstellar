@@ -415,12 +415,6 @@ set dataFilesNotOK = ( )
   endif
 
   if (! -d $workDir/INPUT/) mkdir -p $workDir/INPUT/ && \
-  ln -f /scratch/cimes/wg4031/SPEAR_include/datasets/1949_2040/landuse_transitions/transitions.Hist_SSP585_1940_2040.nc $workDir/INPUT/.
-  if ( $status != 0 ) then
-    set dataFilesNotOK = ( $dataFilesNotOK /scratch/cimes/wg4031/SPEAR_include/datasets/1949_2040/landuse_transitions/transitions.Hist_SSP585_1940_2040.nc )
-  endif
-
-  if (! -d $workDir/INPUT/) mkdir -p $workDir/INPUT/ && \
   ln -f /scratch/cimes/wg4031/inputs/geothermal_davies2013_v1.nc $workDir/INPUT/.
   if ( $status != 0 ) then
     set dataFilesNotOK = ( $dataFilesNotOK /scratch/cimes/wg4031/inputs/geothermal_davies2013_v1.nc )
@@ -433,7 +427,7 @@ set dataFilesNotOK = ( )
   endif
 
   if (! -d $workDir/INPUT/) mkdir -p $workDir/INPUT/ && \
-  ln -f /scratch/cimes/wg4031/MOM6-examples/ice_ocean_SIS2/OM4_025/INPUT/diag_rho2.nc -C $workDir/INPUT/.
+  ln -f /scratch/cimes/wg4031/MOM6-examples/ice_ocean_SIS2/OM4_025/INPUT/diag_rho2.nc $workDir/INPUT/.
   if ( $status != 0 ) then
     set dataFilesNotOK = ( $dataFilesNotOK /scratch/cimes/wg4031/MOM6-examples/ice_ocean_SIS2/OM4_025/INPUT/diag_rho2.nc )
   endif
@@ -1102,7 +1096,6 @@ endif
                                                                                                                                                                                                                  
 ln -s $workDir/INPUT/ocean_topog.nc $workDir/INPUT/topog.nc                                                                                                                                                            
                                                                                                                                                                                                                  
-touch $workDir/INPUT/MOM_override                                                                                                                                                                                   
 touch $workDir/INPUT/MOM_layout                                                                                                                                                                                     
 touch $workDir/INPUT/SIS_layout  
 
