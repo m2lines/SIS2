@@ -9,7 +9,7 @@
 !> However this approach was based on updating model restart files offline (high I/O). This present code applies the corrections
 !> at the thermodynamic timestep of SIS2. Due to the relatively simple CNN and ANN architectures, these have been
 !> directly coded into Fortran here (see CNN_forward and ANN_forward subroutines below). This code was used for bias-correcting
-!> coupled SPEAR reforecasts in the paper https://doi.org/10.48550/arXiv.2505.18328.
+!> coupled SPEAR reforecasts in the paper https://doi.org/10.1126/sciadv.ady8957.
 
 !< Author: Will Gregory (wg4031@princeton.edu / william.gregory@noaa.gov)
 !<
