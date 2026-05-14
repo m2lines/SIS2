@@ -74,6 +74,7 @@ type ice_state_type
 
   real, allocatable, dimension(:,:,:) :: &
     mH_pond, &  !< The mass per unit area of the pond in each category [R Z ~> kg m-2].
+    mH_pond_ice, &  !< The mass per unit area of the pond ice in each category [R Z ~> kg m-2].
     mH_snow, &  !< The mass per unit area of the snow in each category [R Z ~> kg m-2].
     mH_ice, &   !< The mass per unit area of the ice in each category [R Z ~> kg m-2].
     t_surf      !< The surface temperature [Kelvin].
@@ -144,7 +145,7 @@ type ocean_sfc_state_type
   logical :: Cgrid_dyn !< If true use a C-grid discretization of the sea-ice dynamics.
 
   !>@{ diagnostic IDs for ocean surface properties
-  integer :: id_sst=-1, id_sss=-1, id_ssh=-1, id_uo=-1, id_vo=-1, id_frazil=-1
+  integer :: id_sst=-1, id_sss=-1, id_ssh=-1, id_uo=-1, id_vo=-1, id_frazil=-1, id_frazilmass=-1
   !!@}
 end type ocean_sfc_state_type
 
@@ -214,6 +215,7 @@ type fast_ice_avg_type
     WindStr_ocn_y, & !< The meridional wind stress on open water on an A-grid [R Z L T-2 ~> Pa].
     p_atm_surf , &  !< The atmospheric pressure at the top of the ice [R Z L T-2 ~> Pa].
     runoff, &       !< Liquid runoff into the ocean [R Z T-1 ~> kg m-2 s-1].
+    runoff_carbon, & !< Carbon content of liquid runoff into the ocean [R Z T-1 ~> kg m-2 s-1].
     calving         !< Calving of ice or runoff of frozen fresh  water into the ocean [R Z T-1 ~> kg m-2 s-1].
   real, allocatable, dimension(:,:) :: runoff_hflx !< The heat flux associated with runoff, based
                     !! on the temperature difference relative to a reference temperature [Q R Z T-1 ~> W m-2]
@@ -257,7 +259,7 @@ type fast_ice_avg_type
 !SLOW ONLY
   !!@{ Diagnostic IDs
   integer :: id_sh=-1, id_lh=-1, id_sw=-1, id_slp=-1
-  integer :: id_lw=-1, id_snofl=-1, id_rain=-1,  id_evap=-1
+  integer :: id_lw=-1, id_snofl=-1, id_rain=-1,  id_evap=-1, id_evap_i=-1, id_evap_s=-1
   integer :: id_sw_vis_dir=-1, id_sw_vis_dif=-1, id_sw_nir_dir=-1, id_sw_nir_dif=-1
   integer :: id_sw_vis=-1, id_sw_dir=-1, id_sw_dif=-1, id_sw_dn=-1, id_albedo=-1
   integer :: id_runoff=-1, id_calving=-1, id_runoff_hflx=-1, id_calving_hflx=-1
@@ -372,9 +374,10 @@ type ice_ocean_flux_type
                        !! salt flux added to the ocean when the ice is transmuted directly into seawater
                        !! as a form of open boundary condition [1e3 S R Z T-1 ~> kgSalt m-2 s-1].
     mass_ice_sn_p, &   !< The combined mass per unit ocean area of ice, snow and pond water [R Z ~> kg m-2].
-    pres_ocn_top       !< The hydrostatic pressure at the ocean surface due to the weight of ice,
+    pres_ocn_top, &    !< The hydrostatic pressure at the ocean surface due to the weight of ice,
                        !! snow and ponds, exclusive of atmospheric pressure [R Z L T-2 ~> Pa].
                        !### What about pressure from bergs?
+    salt_left_behind   !< THe flux of salt staying in the ocean on ice growth [1e3 S R Z T-1 ~> kgSalt m-2 s-1].
   real, allocatable, dimension(:,:,:) :: flux_sw_ocn !< The downward flux of shortwave radiation
                        !! at the ocean surface [Q R Z T-1 ~> W m-2].  The third dimension combines
                        !! angular orientation (direct or diffuse) and frequency
@@ -448,12 +451,13 @@ subroutine alloc_IST_arrays(HI, IG, US, IST, omit_velocities, omit_Tsurf, do_rid
 
   IST%valid_IST = .true.
   allocate(IST%part_size(isd:ied, jsd:jed, 0:CatIce), source=0.0)
-  allocate(IST%mH_pond(  isd:ied, jsd:jed, CatIce), source=0.0)
-  allocate(IST%mH_snow(  isd:ied, jsd:jed, CatIce), source=0.0)
-  allocate(IST%enth_snow(isd:ied, jsd:jed, CatIce, 1), source=0.0)
-  allocate(IST%mH_ice(   isd:ied, jsd:jed, CatIce), source=0.0)
-  allocate(IST%enth_ice( isd:ied, jsd:jed, CatIce, NkIce), source=0.0)
-  allocate(IST%sal_ice(  isd:ied, jsd:jed, CatIce, NkIce), source=0.0)
+  allocate(IST%mH_pond(    isd:ied, jsd:jed, CatIce), source=0.0)
+  allocate(IST%mH_pond_ice(isd:ied, jsd:jed, CatIce), source=0.0)
+  allocate(IST%mH_snow(    isd:ied, jsd:jed, CatIce), source=0.0)
+  allocate(IST%enth_snow(  isd:ied, jsd:jed, CatIce, 1), source=0.0)
+  allocate(IST%mH_ice(     isd:ied, jsd:jed, CatIce), source=0.0)
+  allocate(IST%enth_ice(   isd:ied, jsd:jed, CatIce, NkIce), source=0.0)
+  allocate(IST%sal_ice(    isd:ied, jsd:jed, CatIce, NkIce), source=0.0)
 
   if (present(do_ridging)) then ; if (do_ridging) then
     allocate(IST%snow_to_ocn(isd:ied, jsd:jed), source=0.0)
@@ -498,9 +502,11 @@ subroutine ice_state_register_restarts(IST, G, IG, US, Ice_restart)
     call register_restart_field(Ice_restart, 'part_size', IST%part_size, dim_3='cat0')
     if (allocated(IST%t_surf)) then
       call register_restart_field(Ice_restart, 't_surf_ice', IST%t_surf, &
-                                  mandatory=.false., units="deg K", conversion=US%C_to_degC)
+                                  mandatory=.false., units="Kelvin", conversion=US%C_to_degC)
     endif
     call register_restart_field(Ice_restart, 'h_pond', IST%mH_pond, &
+                                mandatory=.false., units="kg m-2", conversion=US%RZ_to_kg_m2)
+    call register_restart_field(Ice_restart, 'h_pond_ice', IST%mH_pond_ice, &
                                 mandatory=.false., units="kg m-2", conversion=US%RZ_to_kg_m2)
     call register_restart_field(Ice_restart, 'h_snow', IST%mH_snow, &
                                 mandatory=.true., units="kg m-2", conversion=US%RZ_to_kg_m2)
@@ -515,7 +521,7 @@ subroutine ice_state_register_restarts(IST, G, IG, US, Ice_restart)
     call register_restart_field(Ice_restart, 'enth_ice', IST%enth_ice, &
                                 mandatory=.false., units="J kg-1", conversion=US%Q_to_J_kg)
     call register_restart_field(Ice_restart, 'sal_ice', IST%sal_ice, &
-                                mandatory=.false., units="g/kg", conversion=US%S_to_ppt)
+                                mandatory=.false., units="g kg-1", conversion=US%S_to_ppt)
 
     if (allocated(IST%snow_to_ocn)) then
       call register_restart_field(Ice_restart, 'snow_to_ocn', IST%snow_to_ocn, &
@@ -727,7 +733,7 @@ end subroutine rescale_ice_state_restart_fields
 
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> alloc_fast_ice_avg allocates and zeros out the arrays in a fast_ice_avg_type.
-subroutine alloc_fast_ice_avg(FIA, HI, IG, interp_fluxes, gas_fluxes)
+subroutine alloc_fast_ice_avg(FIA, HI, IG, interp_fluxes, gas_fluxes, carbon_fluxes)
   type(fast_ice_avg_type), pointer    :: FIA !< A type containing averages of fields
                                              !! (mostly fluxes) over the fast updates
   type(hor_index_type),    intent(in) :: HI  !< The horizontal index type describing the domain
@@ -739,6 +745,7 @@ subroutine alloc_fast_ice_avg(FIA, HI, IG, interp_fluxes, gas_fluxes)
                  optional, intent(in) :: gas_fluxes !< If present, this type describes the
                                              !! additional gas or other tracer fluxes between the
                                              !! ocean, ice, and atmosphere.
+  logical,       optional, intent(in) :: carbon_fluxes !< If true, allocate fields for carbon fluxes.
 
   integer :: isc, iec, jsc, jec, isd, ied, jsd, jed, CatIce
 
@@ -792,6 +799,10 @@ subroutine alloc_fast_ice_avg(FIA, HI, IG, interp_fluxes, gas_fluxes)
   if (present(gas_fluxes)) &
     call coupler_type_spawn(gas_fluxes, FIA%tr_flux, (/isd, isc, iec, ied/), &
                             (/jsd, jsc, jec, jed/), (/0, CatIce/))
+
+  if (present(carbon_fluxes)) then ; if (carbon_fluxes) then
+    allocate(FIA%runoff_carbon(isd:ied, jsd:jed), source=0.0)
+  endif ; endif
 
 end subroutine alloc_fast_ice_avg
 
@@ -862,7 +873,8 @@ subroutine ice_rad_register_restarts(HI, IG, US, param_file, Rad, Ice_restart)
   call safe_alloc(Rad%coszen_lastrad, isd, ied, jsd, jed)
 
   call register_restart_field(Ice_restart, 'coszen', Rad%coszen_nextrad, mandatory=.false.)
-  call register_restart_field(Ice_restart, 'T_skin', Rad%t_skin, mandatory=.false., conversion=US%C_to_degC)
+  call register_restart_field(Ice_restart, 'T_skin', Rad%t_skin, mandatory=.false., &
+                              units="degC", conversion=US%C_to_degC)
 
 end subroutine ice_rad_register_restarts
 
@@ -894,7 +906,7 @@ end subroutine alloc_ice_rad
 
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> alloc_ice_ocean_flux allocates and zeros out the arrays in an ice_ocean_flux_type.
-subroutine alloc_ice_ocean_flux(IOF, HI, do_stress_mag, do_iceberg_fields, do_transmute)
+subroutine alloc_ice_ocean_flux(IOF, HI, do_stress_mag, do_iceberg_fields, do_transmute, do_brine_plume)
   type(ice_ocean_flux_type), pointer    :: IOF !< A structure containing fluxes from the ice to
                                                !! the ocean that are calculated by the ice model.
   type(hor_index_type),      intent(in) :: HI  !< The horizontal index type describing the domain
@@ -905,6 +917,8 @@ subroutine alloc_ice_ocean_flux(IOF, HI, do_stress_mag, do_iceberg_fields, do_tr
   logical,         optional, intent(in) :: do_transmute !< If true, allocate fields related to
                                                !! transmuting ice directly into seawater as a form
                                                !! of open boundary condition
+  logical,         optional, intent(in) :: do_brine_plume !< If true, allocate fields related
+                                               !! brine plume parameterization
   integer :: CatIce
   logical :: alloc_bergs, alloc_stress_mag
 
@@ -916,6 +930,9 @@ subroutine alloc_ice_ocean_flux(IOF, HI, do_stress_mag, do_iceberg_fields, do_tr
   allocate(IOF%flux_salt(SZI_(HI), SZJ_(HI)), source=0.0)
   if (do_transmute) then
     allocate(IOF%transmutation_salt_flux(SZI_(HI), SZJ_(HI)), source=0.0)
+  endif
+  if (do_brine_plume) then
+    allocate(IOF%salt_left_behind(SZI_(HI), SZJ_(HI)), source=0.0)
   endif
 
   allocate(IOF%flux_sh_ocn_top(SZI_(HI), SZJ_(HI)), source=0.0)
@@ -1066,6 +1083,7 @@ subroutine copy_IST_to_IST(IST_in, IST_out, HI_in, HI_out, IG)
 
   do k=1,ncat ; do j=jsc,jec ; do i=isc,iec ; i2 = i+i_off ; j2 = j+j_off
     IST_out%mH_pond(i2,j2,k) = IST_in%mH_pond(i,j,k)
+    IST_out%mH_pond_ice(i2,j2,k) = IST_in%mH_pond_ice(i,j,k)
     IST_out%mH_snow(i2,j2,k) = IST_in%mH_snow(i,j,k)
     IST_out%mH_ice(i2,j2,k) = IST_in%mH_ice(i,j,k)
 
@@ -1105,6 +1123,8 @@ subroutine redistribute_IST_to_IST(IST_in, IST_out, domain_in, domain_out)
     endif
     call redistribute_data(domain_in, IST_in%mH_pond, domain_out, &
                            IST_out%mH_pond, complete=.false.)
+    call redistribute_data(domain_in, IST_in%mH_pond_ice, domain_out, &
+                           IST_out%mH_pond_ice, complete=.false.)
     call redistribute_data(domain_in, IST_in%mH_snow, domain_out, &
                            IST_out%mH_snow, complete=.false.)
     call redistribute_data(domain_in, IST_in%mH_ice, domain_out, &
@@ -1128,6 +1148,8 @@ subroutine redistribute_IST_to_IST(IST_in, IST_out, domain_in, domain_out)
     call redistribute_data(domain_in, null_ptr3D, domain_out, &
                            IST_out%mH_pond, complete=.false.)
     call redistribute_data(domain_in, null_ptr3D, domain_out, &
+                           IST_out%mH_pond_ice, complete=.false.)
+    call redistribute_data(domain_in, null_ptr3D, domain_out, &
                            IST_out%mH_snow, complete=.false.)
     call redistribute_data(domain_in, null_ptr3D, domain_out, &
                            IST_out%mH_ice, complete=.false.)
@@ -1148,6 +1170,8 @@ subroutine redistribute_IST_to_IST(IST_in, IST_out, domain_in, domain_out)
                              null_ptr3D, complete=.false.)
     endif
     call redistribute_data(domain_in, IST_in%mH_pond, domain_out, &
+                           null_ptr3D, complete=.false.)
+    call redistribute_data(domain_in, IST_in%mH_pond_ice, domain_out, &
                            null_ptr3D, complete=.false.)
     call redistribute_data(domain_in, IST_in%mH_snow, domain_out, &
                            null_ptr3D, complete=.false.)
@@ -1429,6 +1453,13 @@ subroutine copy_FIA_to_FIA(FIA_in, FIA_out, HI_in, HI_out, IG)
       FIA_out%Tskin_cat(i2,j2,k) = FIA_in%Tskin_cat(i,j,k)
     enddo ; enddo ; enddo
   endif
+  ! runoff_carbon may not always be allocated, so check before copying.
+  if (allocated(FIA_out%runoff_carbon)) then
+    do j=jsc,jec ; do i=isc,iec
+      i2 = i+i_off ; j2 = j+j_off
+      FIA_out%runoff_carbon(i2,j2) = FIA_in%runoff_carbon(i,j)
+    enddo ; enddo
+  endif
 
   if (FIA_in%copy_calls /= FIA_out%copy_calls) call SIS_error(WARNING, &
     "copy_FIA_to_FIA called an inconsistent number of time for the input and output types.")
@@ -1548,6 +1579,11 @@ subroutine redistribute_FIA_to_FIA(FIA_in, FIA_out, domain_in, domain_out, G_out
       call redistribute_data(domain_in, FIA_in%Tskin_cat, domain_out, &
                              FIA_out%Tskin_cat, complete=.true.)
     endif
+    ! runoff_carbon may not always be allocated, so check before distributing.
+    if (allocated(FIA_in%runoff_carbon) .and. allocated(FIA_out%runoff_carbon)) then
+      call redistribute_data(domain_in, FIA_in%runoff_carbon, domain_out, &
+                             FIA_out%runoff_carbon, complete=.false.)
+    endif
 
   elseif (associated(FIA_out)) then
     ! Use the null pointers in place of the unneeded input arrays.
@@ -1622,7 +1658,11 @@ subroutine redistribute_FIA_to_FIA(FIA_in, FIA_out, domain_in, domain_out, G_out
       call redistribute_data(domain_in, null_ptr3D, domain_out, &
                              FIA_out%Tskin_cat, complete=.true.)
     endif
-
+    ! runoff_carbon may not always be allocated, so check before distributing.
+    if (allocated(FIA_out%runoff_carbon)) then
+      call redistribute_data(domain_in, null_ptr2D, domain_out, &
+                             FIA_out%runoff_carbon, complete=.false.)
+    endif
 
   elseif (associated(FIA_in)) then
     ! Use the null pointers in place of the unneeded output arrays.
@@ -1696,6 +1736,11 @@ subroutine redistribute_FIA_to_FIA(FIA_in, FIA_out, domain_in, domain_out, G_out
                              null_ptr3D, complete=.true.)
       call redistribute_data(domain_in, FIA_in%Tskin_cat, domain_out, &
                              null_ptr3D, complete=.true.)
+    endif
+    ! runoff_carbon may not always be allocated, so check before distributing.
+    if (allocated(FIA_in%runoff_carbon)) then
+      call redistribute_data(domain_in, FIA_in%runoff_carbon, domain_out, &
+                             null_ptr2D, complete=.false.)
     endif
 
   else
@@ -1957,17 +2002,22 @@ subroutine register_fast_to_slow_restarts(FIA, Rad, TSF, mpp_domain, US, Ice_res
   call register_restart_field(Ice_restart, 'flux_sw_top', FIA%flux_sw_top, dim_3="cat0", dim_4="band", &
                               mandatory=.false., units="W m-2", conversion=US%QRZ_T_to_W_m2)
   call register_restart_field(Ice_restart, 'WindStr_x', FIA%WindStr_x, &
-                              mandatory=.false., units="Pa", conversion=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
+                              mandatory=.false., units="Pa", conversion=US%RLZ_T2_to_Pa)
   call register_restart_field(Ice_restart, 'WindStr_y', FIA%WindStr_y, &
-                              mandatory=.false., units="Pa", conversion=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
+                              mandatory=.false., units="Pa", conversion=US%RLZ_T2_to_Pa)
   call register_restart_field(Ice_restart, 'WindStr_ocn_x', FIA%WindStr_ocn_x, &
-                              mandatory=.false., units="Pa", conversion=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
+                              mandatory=.false., units="Pa", conversion=US%RLZ_T2_to_Pa)
   call register_restart_field(Ice_restart, 'WindStr_ocn_y', FIA%WindStr_ocn_y, &
-                              mandatory=.false., units="Pa", conversion=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
+                              mandatory=.false., units="Pa", conversion=US%RLZ_T2_to_Pa)
   call register_restart_field(Ice_restart, 'p_atm_surf', FIA%p_atm_surf, &
-                              mandatory=.false., units="Pa", conversion=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
+                              mandatory=.false., units="Pa", conversion=US%RLZ_T2_to_Pa)
   call register_restart_field(Ice_restart, 'runoff', FIA%runoff, &
                               mandatory=.false., units="kg m-2 s-1", conversion=US%RZ_T_to_kg_m2s)
+  ! runoff_carbon may not always be allocated, so check before registering.
+  if (allocated(FIA%runoff_carbon)) then
+    call register_restart_field(Ice_restart, 'runoff_carbon', FIA%runoff_carbon, &
+                                mandatory=.false., units="kg m-2 s-1", conversion=US%RZ_T_to_kg_m2s)
+  endif
   call register_restart_field(Ice_restart, 'calving', FIA%calving, &
                               mandatory=.false., units="kg m-2 s-1", conversion=US%RZ_T_to_kg_m2s)
   call register_restart_field(Ice_restart, 'runoff_hflx', FIA%runoff_hflx, &
@@ -2035,7 +2085,7 @@ subroutine dealloc_IST_arrays(IST)
   type(ice_state_type), intent(inout) :: IST !< A type describing the state of the sea ice
 
   deallocate(IST%part_size, IST%mH_snow, IST%mH_ice)
-  deallocate(IST%mH_pond) ! mw/new
+  deallocate(IST%mH_pond, IST%mH_pond_ice) ! mw/new
   deallocate(IST%enth_snow, IST%enth_ice, IST%sal_ice)
   if (allocated(IST%snow_to_ocn)) deallocate(IST%snow_to_ocn)
   if (allocated(IST%enth_snow_to_ocn)) deallocate(IST%enth_snow_to_ocn)
@@ -2116,6 +2166,7 @@ subroutine dealloc_fast_ice_avg(FIA)
   if (allocated(FIA%devapdt))  deallocate(FIA%devapdt)
   if (allocated(FIA%dlwdt)) deallocate(FIA%dlwdt)
   if (allocated(FIA%Tskin_cat)) deallocate(FIA%Tskin_cat)
+  if (allocated(FIA%runoff_carbon)) deallocate(FIA%runoff_carbon)
 
   deallocate(FIA)
 end subroutine dealloc_fast_ice_avg
@@ -2175,6 +2226,7 @@ subroutine dealloc_ice_ocean_flux(IOF)
   deallocate(IOF%flux_u_ocn, IOF%flux_v_ocn, IOF%pres_ocn_top, IOF%mass_ice_sn_p)
   if (allocated(IOF%stress_mag)) deallocate(IOF%stress_mag)
   if (allocated(IOF%transmutation_salt_flux)) deallocate(IOF%transmutation_salt_flux)
+  if (allocated(IOF%salt_left_behind)) deallocate(IOF%salt_left_behind)
 
   deallocate(IOF%Enth_Mass_in_atm, IOF%Enth_Mass_out_atm)
   deallocate(IOF%Enth_Mass_in_ocn, IOF%Enth_Mass_out_ocn)
@@ -2207,35 +2259,38 @@ subroutine IOF_chksum(mesg, IOF, G, US, mech_fluxes, thermo_fluxes)
   if (present(thermo_fluxes)) then ; do_thermo = thermo_fluxes ; endif
 
   if (do_thermo) then
-    call hchksum(IOF%flux_salt, trim(mesg)//" IOF%flux_salt", G%HI, scale=US%S_to_ppt*US%RZ_T_to_kg_m2s)
+    call hchksum(IOF%flux_salt, trim(mesg)//" IOF%flux_salt", G%HI, unscale=US%S_to_ppt*US%RZ_T_to_kg_m2s)
     if (allocated(IOF%transmutation_salt_flux)) call hchksum(IOF%transmutation_salt_flux, &
-          trim(mesg)//" IOF%transmutation_salt_flux", G%HI, scale=US%S_to_ppt*US%RZ_T_to_kg_m2s)
+          trim(mesg)//" IOF%transmutation_salt_flux", G%HI, unscale=US%S_to_ppt*US%RZ_T_to_kg_m2s)
+    if (allocated(IOF%salt_left_behind)) call hchksum(IOF%salt_left_behind, &
+          trim(mesg)//" IOF%salt_left_behind", G%HI, unscale=US%S_to_ppt*US%RZ_T_to_kg_m2s)
 
-    call hchksum(IOF%flux_sh_ocn_top, trim(mesg)//" IOF%flux_sh_ocn_top", G%HI, scale=US%QRZ_T_to_W_m2)
-    call hchksum(IOF%flux_lw_ocn_top, trim(mesg)//" IOF%flux_lw_ocn_top", G%HI, scale=US%QRZ_T_to_W_m2)
-    call hchksum(IOF%flux_lh_ocn_top, trim(mesg)//" IOF%flux_lh_ocn_top", G%HI, scale=US%QRZ_T_to_W_m2)
-    call hchksum(IOF%flux_sw_ocn,     trim(mesg)//" IOF%flux_sw_ocn",     G%HI, scale=US%QRZ_T_to_W_m2)
-    call hchksum(IOF%evap_ocn_top,    trim(mesg)//" IOF%evap_ocn_top",  G%HI, scale=US%RZ_T_to_kg_m2s)
-    call hchksum(IOF%lprec_ocn_top,   trim(mesg)//" IOF%lprec_ocn_top", G%HI, scale=US%RZ_T_to_kg_m2s)
-    call hchksum(IOF%fprec_ocn_top,   trim(mesg)//" IOF%fprec_ocn_top", G%HI, scale=US%RZ_T_to_kg_m2s)
+    call hchksum(IOF%flux_sh_ocn_top, trim(mesg)//" IOF%flux_sh_ocn_top", G%HI, unscale=US%QRZ_T_to_W_m2)
+    call hchksum(IOF%flux_lw_ocn_top, trim(mesg)//" IOF%flux_lw_ocn_top", G%HI, unscale=US%QRZ_T_to_W_m2)
+    call hchksum(IOF%flux_lh_ocn_top, trim(mesg)//" IOF%flux_lh_ocn_top", G%HI, unscale=US%QRZ_T_to_W_m2)
+    call hchksum(IOF%flux_sw_ocn,     trim(mesg)//" IOF%flux_sw_ocn",     G%HI, unscale=US%QRZ_T_to_W_m2)
+    call hchksum(IOF%evap_ocn_top,    trim(mesg)//" IOF%evap_ocn_top",  G%HI, unscale=US%RZ_T_to_kg_m2s)
+    call hchksum(IOF%lprec_ocn_top,   trim(mesg)//" IOF%lprec_ocn_top", G%HI, unscale=US%RZ_T_to_kg_m2s)
+    call hchksum(IOF%fprec_ocn_top,   trim(mesg)//" IOF%fprec_ocn_top", G%HI, unscale=US%RZ_T_to_kg_m2s)
+
   endif
   if (do_mech) then
-    call hchksum(IOF%flux_u_ocn,      trim(mesg)//" IOF%flux_u_ocn",   G%HI, scale=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
-    call hchksum(IOF%flux_v_ocn,      trim(mesg)//" IOF%flux_v_ocn",   G%HI, scale=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
-    call hchksum(IOF%pres_ocn_top,    trim(mesg)//" IOF%pres_ocn_top", G%HI, scale=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
-    call hchksum(IOF%mass_ice_sn_p,   trim(mesg)//" IOF%mass_ice_sn_p", G%HI, scale=US%RZ_to_kg_m2)
+    call hchksum(IOF%flux_u_ocn,      trim(mesg)//" IOF%flux_u_ocn",   G%HI, unscale=US%RLZ_T2_to_Pa)
+    call hchksum(IOF%flux_v_ocn,      trim(mesg)//" IOF%flux_v_ocn",   G%HI, unscale=US%RLZ_T2_to_Pa)
+    call hchksum(IOF%pres_ocn_top,    trim(mesg)//" IOF%pres_ocn_top", G%HI, unscale=US%RLZ_T2_to_Pa)
+    call hchksum(IOF%mass_ice_sn_p,   trim(mesg)//" IOF%mass_ice_sn_p", G%HI, unscale=US%RZ_to_kg_m2)
     if (allocated(IOF%stress_mag)) &
-      call hchksum(IOF%stress_mag,    trim(mesg)//" IOF%stress_mag", G%HI, scale=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
+      call hchksum(IOF%stress_mag,    trim(mesg)//" IOF%stress_mag", G%HI, unscale=US%RLZ_T2_to_Pa)
   endif
 
   if (do_thermo) then
-    call hchksum(IOF%Enth_Mass_in_atm,  trim(mesg)//" IOF%Enth_Mass_in_atm",  G%HI, scale=US%QRZ_T_to_W_m2*US%T_to_s)
-    call hchksum(IOF%Enth_Mass_out_atm, trim(mesg)//" IOF%Enth_Mass_out_atm", G%HI, scale=US%QRZ_T_to_W_m2*US%T_to_s)
-    call hchksum(IOF%Enth_Mass_in_ocn,  trim(mesg)//" IOF%Enth_Mass_in_ocn",  G%HI, scale=US%QRZ_T_to_W_m2*US%T_to_s)
-    call hchksum(IOF%Enth_Mass_out_ocn, trim(mesg)//" IOF%Enth_Mass_out_ocn", G%HI, scale=US%QRZ_T_to_W_m2*US%T_to_s)
+    call hchksum(IOF%Enth_Mass_in_atm,  trim(mesg)//" IOF%Enth_Mass_in_atm",  G%HI, unscale=US%QRZ_T_to_W_m2*US%T_to_s)
+    call hchksum(IOF%Enth_Mass_out_atm, trim(mesg)//" IOF%Enth_Mass_out_atm", G%HI, unscale=US%QRZ_T_to_W_m2*US%T_to_s)
+    call hchksum(IOF%Enth_Mass_in_ocn,  trim(mesg)//" IOF%Enth_Mass_in_ocn",  G%HI, unscale=US%QRZ_T_to_W_m2*US%T_to_s)
+    call hchksum(IOF%Enth_Mass_out_ocn, trim(mesg)//" IOF%Enth_Mass_out_ocn", G%HI, unscale=US%QRZ_T_to_W_m2*US%T_to_s)
 
     if (allocated(IOF%transmutation_enth)) call hchksum(IOF%transmutation_enth, &
-          trim(mesg)//" IOF%transmutation_enth", G%HI, scale=US%QRZ_T_to_W_m2*US%T_to_s)
+          trim(mesg)//" IOF%transmutation_enth", G%HI, unscale=US%QRZ_T_to_W_m2*US%T_to_s)
   endif
 end subroutine IOF_chksum
 
@@ -2251,48 +2306,50 @@ subroutine FIA_chksum(mesg, FIA, G, US, check_ocean)
   character(len=8) :: nstr
   integer :: b
 
-  call hchksum(FIA%flux_sh_top(:,:,1:), trim(mesg)//" FIA%flux_sh_top", G%HI, scale=US%QRZ_T_to_W_m2)
-  call hchksum(FIA%evap_top(:,:,1:), trim(mesg)//" FIA%evap_top", G%HI, scale=US%RZ_T_to_kg_m2s)
+  call hchksum(FIA%flux_sh_top(:,:,1:), trim(mesg)//" FIA%flux_sh_top", G%HI, unscale=US%QRZ_T_to_W_m2)
+  call hchksum(FIA%evap_top(:,:,1:), trim(mesg)//" FIA%evap_top", G%HI, unscale=US%RZ_T_to_kg_m2s)
   do b=1,size(FIA%flux_sw_top,4)
     write(nstr, '(I4)') b ; nstr = adjustl(nstr)
     call hchksum(FIA%flux_sw_top(:,:,1:,b), &
-                 trim(mesg)//" FIA%flux_sw_top("//trim(nstr)//")", G%HI, scale=US%QRZ_T_to_W_m2)
+                 trim(mesg)//" FIA%flux_sw_top("//trim(nstr)//")", G%HI, unscale=US%QRZ_T_to_W_m2)
   enddo
-  call hchksum(FIA%flux_lw_top(:,:,1:), trim(mesg)//" FIA%flux_lw_top", G%HI, scale=US%QRZ_T_to_W_m2)
-  call hchksum(FIA%flux_lh_top(:,:,1:), trim(mesg)//" FIA%flux_lh_top", G%HI, scale=US%QRZ_T_to_W_m2)
-  call hchksum(FIA%lprec_top(:,:,1:), trim(mesg)//" FIA%lprec_top", G%HI, scale=US%RZ_T_to_kg_m2s)
-  call hchksum(FIA%fprec_top(:,:,1:), trim(mesg)//" FIA%fprec_top", G%HI, scale=US%RZ_T_to_kg_m2s)
+  call hchksum(FIA%flux_lw_top(:,:,1:), trim(mesg)//" FIA%flux_lw_top", G%HI, unscale=US%QRZ_T_to_W_m2)
+  call hchksum(FIA%flux_lh_top(:,:,1:), trim(mesg)//" FIA%flux_lh_top", G%HI, unscale=US%QRZ_T_to_W_m2)
+  call hchksum(FIA%lprec_top(:,:,1:), trim(mesg)//" FIA%lprec_top", G%HI, unscale=US%RZ_T_to_kg_m2s)
+  call hchksum(FIA%fprec_top(:,:,1:), trim(mesg)//" FIA%fprec_top", G%HI, unscale=US%RZ_T_to_kg_m2s)
 
   if (present(check_ocean)) then ; if (check_ocean) then
-    call hchksum(FIA%flux_sh_top(:,:,0), trim(mesg)//" FIA%flux_sh_top0", G%HI, scale=US%QRZ_T_to_W_m2)
-    call hchksum(FIA%evap_top(:,:,0), trim(mesg)//" FIA%evap_top0", G%HI, scale=US%RZ_T_to_kg_m2s)
+    call hchksum(FIA%flux_sh_top(:,:,0), trim(mesg)//" FIA%flux_sh_top0", G%HI, unscale=US%QRZ_T_to_W_m2)
+    call hchksum(FIA%evap_top(:,:,0), trim(mesg)//" FIA%evap_top0", G%HI, unscale=US%RZ_T_to_kg_m2s)
     do b=1,size(FIA%flux_sw_top,4)
       write(nstr, '(I4)') b ; nstr = adjustl(nstr)
       call hchksum(FIA%flux_sw_top(:,:,0,b), &
-                   trim(mesg)//" FIA%flux_sw_top0("//trim(nstr)//")", G%HI, scale=US%QRZ_T_to_W_m2)
+                   trim(mesg)//" FIA%flux_sw_top0("//trim(nstr)//")", G%HI, unscale=US%QRZ_T_to_W_m2)
     enddo
-    call hchksum(FIA%flux_lw_top(:,:,0), trim(mesg)//" FIA%flux_lw_top0", G%HI, scale=US%QRZ_T_to_W_m2)
-    call hchksum(FIA%flux_lh_top(:,:,0), trim(mesg)//" FIA%flux_lh_top0", G%HI, scale=US%QRZ_T_to_W_m2)
-    call hchksum(FIA%lprec_top(:,:,0), trim(mesg)//" FIA%lprec_top0", G%HI, scale=US%RZ_T_to_kg_m2s)
-    call hchksum(FIA%fprec_top(:,:,0), trim(mesg)//" FIA%fprec_top0", G%HI, scale=US%RZ_T_to_kg_m2s)
+    call hchksum(FIA%flux_lw_top(:,:,0), trim(mesg)//" FIA%flux_lw_top0", G%HI, unscale=US%QRZ_T_to_W_m2)
+    call hchksum(FIA%flux_lh_top(:,:,0), trim(mesg)//" FIA%flux_lh_top0", G%HI, unscale=US%QRZ_T_to_W_m2)
+    call hchksum(FIA%lprec_top(:,:,0), trim(mesg)//" FIA%lprec_top0", G%HI, unscale=US%RZ_T_to_kg_m2s)
+    call hchksum(FIA%fprec_top(:,:,0), trim(mesg)//" FIA%fprec_top0", G%HI, unscale=US%RZ_T_to_kg_m2s)
   endif ; endif
 
-  call hchksum(FIA%tmelt, trim(mesg)//" FIA%tmelt", G%HI, scale=US%QRZ_T_to_W_m2*US%T_to_s)
-  call hchksum(FIA%bmelt, trim(mesg)//" FIA%bmelt", G%HI, scale=US%QRZ_T_to_W_m2*US%T_to_s)
+  call hchksum(FIA%tmelt, trim(mesg)//" FIA%tmelt", G%HI, unscale=US%QRZ_T_to_W_m2*US%T_to_s)
+  call hchksum(FIA%bmelt, trim(mesg)//" FIA%bmelt", G%HI, unscale=US%QRZ_T_to_W_m2*US%T_to_s)
   call hchksum(FIA%sw_abs_ocn, trim(mesg)//" FIA%sw_abs_ocn", G%HI)
 
-  call hchksum(FIA%WindStr_x, trim(mesg)//" FIA%WindStr_x", G%HI, scale=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
-  call hchksum(FIA%WindStr_y, trim(mesg)//" FIA%WindStr_y", G%HI, scale=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
-  call hchksum(FIA%WindStr_ocn_x, trim(mesg)//" FIA%WindStr_ocn_x", G%HI, scale=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
-  call hchksum(FIA%WindStr_ocn_y, trim(mesg)//" FIA%WindStr_ocn_y", G%HI, scale=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
-  call hchksum(FIA%p_atm_surf, trim(mesg)//" FIA%p_atm_surf", G%HI, scale=US%RZ_T_to_kg_m2s*US%L_T_to_m_s)
-  call hchksum(FIA%runoff, trim(mesg)//" FIA%runoff", G%HI, scale=US%RZ_T_to_kg_m2s)
-  call hchksum(FIA%calving, trim(mesg)//" FIA%calving", G%HI, scale=US%RZ_T_to_kg_m2s)
-  call hchksum(FIA%runoff_hflx, trim(mesg)//" FIA%runoff_hflx", G%HI, scale=US%QRZ_T_to_W_m2)
-  call hchksum(FIA%calving_hflx, trim(mesg)//" FIA%calving_hflx", G%HI, scale=US%QRZ_T_to_W_m2)
+  call hchksum(FIA%WindStr_x, trim(mesg)//" FIA%WindStr_x", G%HI, unscale=US%RLZ_T2_to_Pa)
+  call hchksum(FIA%WindStr_y, trim(mesg)//" FIA%WindStr_y", G%HI, unscale=US%RLZ_T2_to_Pa)
+  call hchksum(FIA%WindStr_ocn_x, trim(mesg)//" FIA%WindStr_ocn_x", G%HI, unscale=US%RLZ_T2_to_Pa)
+  call hchksum(FIA%WindStr_ocn_y, trim(mesg)//" FIA%WindStr_ocn_y", G%HI, unscale=US%RLZ_T2_to_Pa)
+  call hchksum(FIA%p_atm_surf, trim(mesg)//" FIA%p_atm_surf", G%HI, unscale=US%RLZ_T2_to_Pa)
+  call hchksum(FIA%runoff, trim(mesg)//" FIA%runoff", G%HI, unscale=US%RZ_T_to_kg_m2s)
+  if (allocated(FIA%runoff_carbon)) &
+    call hchksum(FIA%runoff_carbon, trim(mesg)//" FIA%runoff_carbon", G%HI, unscale=US%RZ_T_to_kg_m2s)
+  call hchksum(FIA%calving, trim(mesg)//" FIA%calving", G%HI, unscale=US%RZ_T_to_kg_m2s)
+  call hchksum(FIA%runoff_hflx, trim(mesg)//" FIA%runoff_hflx", G%HI, unscale=US%QRZ_T_to_W_m2)
+  call hchksum(FIA%calving_hflx, trim(mesg)//" FIA%calving_hflx", G%HI, unscale=US%QRZ_T_to_W_m2)
   call hchksum(FIA%ice_free, trim(mesg)//" FIA%ice_free", G%HI)
   call hchksum(FIA%ice_cover, trim(mesg)//" FIA%ice_cover", G%HI)
-  call hchksum(FIA%flux_sw_dn, trim(mesg)//" FIA%flux_sw_dn", G%HI, scale=US%QRZ_T_to_W_m2)
+  call hchksum(FIA%flux_sw_dn, trim(mesg)//" FIA%flux_sw_dn", G%HI, unscale=US%QRZ_T_to_W_m2)
 
 end subroutine FIA_chksum
 
@@ -2315,19 +2372,19 @@ subroutine OSS_chksum(mesg, OSS, G, US, haloshift)
   ! and js...je as their extent.
   hs=0 ; if (present(haloshift)) hs=haloshift
 
-  call hchksum(OSS%s_surf, trim(mesg)//" OSS%s_surf", G%HI, haloshift=hs, scale=US%S_to_ppt)
-  call hchksum(OSS%SST_C, trim(mesg)//" OSS%SST_C", G%HI, haloshift=hs, scale=US%C_to_degC)
-  call hchksum(OSS%T_fr_ocn, trim(mesg)//" OSS%T_fr_ocn", G%HI, haloshift=hs, scale=US%C_to_degC)
-  call hchksum(OSS%sea_lev, trim(mesg)//" OSS%sea_lev", G%HI, haloshift=hs, scale=US%Z_to_m)
-  call hchksum(OSS%bheat, trim(mesg)//" OSS%bheat", G%HI, haloshift=hs, scale=US%QRZ_T_to_W_m2)
-  call hchksum(OSS%frazil, trim(mesg)//" OSS%frazil", G%HI, haloshift=hs, scale=US%QRZ_T_to_W_m2*US%T_to_s)
+  call hchksum(OSS%s_surf, trim(mesg)//" OSS%s_surf", G%HI, haloshift=hs, unscale=US%S_to_ppt)
+  call hchksum(OSS%SST_C, trim(mesg)//" OSS%SST_C", G%HI, haloshift=hs, unscale=US%C_to_degC)
+  call hchksum(OSS%T_fr_ocn, trim(mesg)//" OSS%T_fr_ocn", G%HI, haloshift=hs, unscale=US%C_to_degC)
+  call hchksum(OSS%sea_lev, trim(mesg)//" OSS%sea_lev", G%HI, haloshift=hs, unscale=US%Z_to_m)
+  call hchksum(OSS%bheat, trim(mesg)//" OSS%bheat", G%HI, haloshift=hs, unscale=US%QRZ_T_to_W_m2)
+  call hchksum(OSS%frazil, trim(mesg)//" OSS%frazil", G%HI, haloshift=hs, unscale=US%QRZ_T_to_W_m2*US%T_to_s)
 
   if (OSS%Cgrid_dyn) then
-    call uvchksum(mesg//" OSS%[uv]_ocn_C", OSS%u_ocn_C, OSS%v_ocn_C, G, halos=hs, scale=US%L_T_to_m_s)
-    call check_redundant_C(mesg//" OSS%u/v_ocn_C", OSS%u_ocn_C, OSS%v_ocn_C, G)
+    call uvchksum(mesg//" OSS%[uv]_ocn_C", OSS%u_ocn_C, OSS%v_ocn_C, G, halos=hs, unscale=US%L_T_to_m_s)
+    call check_redundant_C(mesg//" OSS%u/v_ocn_C", OSS%u_ocn_C, OSS%v_ocn_C, G, unscale=US%L_T_to_m_s)
   else
-    call Bchksum_pair(mesg//" OSS%[uv]_ocn_B", OSS%u_ocn_B, OSS%v_ocn_B, G, halos=hs, scale=US%L_T_to_m_s)
-    call check_redundant_B(mesg//" OSS%u/v_ocn", OSS%u_ocn_B, OSS%v_ocn_B, G)
+    call Bchksum_pair(mesg//" OSS%[uv]_ocn_B", OSS%u_ocn_B, OSS%v_ocn_B, G, halos=hs, unscale=US%L_T_to_m_s)
+    call check_redundant_B(mesg//" OSS%u/v_ocn", OSS%u_ocn_B, OSS%v_ocn_B, G, unscale=US%L_T_to_m_s)
   endif
 
 end subroutine OSS_chksum
@@ -2351,14 +2408,14 @@ subroutine TSF_chksum(mesg, TSF, G, US, haloshift)
   ! and js...je as their extent.
   hs=0 ; if (present(haloshift)) hs=haloshift
 
-  call hchksum(TSF%flux_sh, trim(mesg)//" TSF%flux_sh", G%HI, haloshift=hs, scale=US%QRZ_T_to_W_m2)
-  ! call hchksum(TSF%flux_sw, trim(mesg)//" TSF%flux_sw", G%HI, haloshift=hs, scale=US%QRZ_T_to_W_m2)
-  call hchksum(TSF%flux_lw, trim(mesg)//" TSF%flux_lw", G%HI, haloshift=hs, scale=US%QRZ_T_to_W_m2)
-  call hchksum(TSF%flux_lh, trim(mesg)//" TSF%flux_lh", G%HI, haloshift=hs, scale=US%QRZ_T_to_W_m2)
-  call hchksum(TSF%evap, trim(mesg)//" TSF%evap", G%HI, haloshift=hs, scale=US%RZ_T_to_kg_m2s)
-  call hchksum(TSF%lprec, trim(mesg)//" TSF%lprec", G%HI, haloshift=hs, scale=US%RZ_T_to_kg_m2s)
-  call hchksum(TSF%fprec, trim(mesg)//" TSF%fprec", G%HI, haloshift=hs, scale=US%RZ_T_to_kg_m2s)
-  call uvchksum(mesg//" TSF%flux_[uv]", TSF%flux_u, TSF%flux_v, G, halos=hs, scale=US%L_T_to_m_s)
+  call hchksum(TSF%flux_sh, trim(mesg)//" TSF%flux_sh", G%HI, haloshift=hs, unscale=US%QRZ_T_to_W_m2)
+  ! call hchksum(TSF%flux_sw, trim(mesg)//" TSF%flux_sw", G%HI, haloshift=hs, unscale=US%QRZ_T_to_W_m2)
+  call hchksum(TSF%flux_lw, trim(mesg)//" TSF%flux_lw", G%HI, haloshift=hs, unscale=US%QRZ_T_to_W_m2)
+  call hchksum(TSF%flux_lh, trim(mesg)//" TSF%flux_lh", G%HI, haloshift=hs, unscale=US%QRZ_T_to_W_m2)
+  call hchksum(TSF%evap, trim(mesg)//" TSF%evap", G%HI, haloshift=hs, unscale=US%RZ_T_to_kg_m2s)
+  call hchksum(TSF%lprec, trim(mesg)//" TSF%lprec", G%HI, haloshift=hs, unscale=US%RZ_T_to_kg_m2s)
+  call hchksum(TSF%fprec, trim(mesg)//" TSF%fprec", G%HI, haloshift=hs, unscale=US%RZ_T_to_kg_m2s)
+  call uvchksum(mesg//" TSF%flux_[uv]", TSF%flux_u, TSF%flux_v, G, halos=hs, unscale=US%L_T_to_m_s)
 
 end subroutine TSF_chksum
 
@@ -2384,25 +2441,26 @@ subroutine IST_chksum(mesg, IST, G, US, IG, haloshift)
 
   call hchksum(IST%part_size(:,:,0), trim(mesg)//" IST%part_size(0)", G%HI, haloshift=hs)
   call hchksum(IST%part_size(:,:,1:), trim(mesg)//" IST%part_size", G%HI, haloshift=hs)
-  call hchksum(IST%mH_ice, trim(mesg)//" IST%mH_ice", G%HI, haloshift=hs, scale=US%RZ_to_kg_m2)
+  call hchksum(IST%mH_ice, trim(mesg)//" IST%mH_ice", G%HI, haloshift=hs, unscale=US%RZ_to_kg_m2)
   do k=1,IG%NkIce
     write(k_str1,'(I8)') k ;  k_str = "("//trim(adjustl(k_str1))//")"
     call hchksum(IST%enth_ice(:,:,:,k), trim(mesg)//" IST%enth_ice("//trim(k_str), G%HI, &
-                 haloshift=hs, scale=US%Q_to_J_kg)
+                 haloshift=hs, unscale=US%Q_to_J_kg)
     call hchksum(IST%sal_ice(:,:,:,k), trim(mesg)//" IST%sal_ice("//trim(k_str), G%HI, &
-                 haloshift=hs, scale=US%S_to_ppt)
+                 haloshift=hs, unscale=US%S_to_ppt)
   enddo
-  call hchksum(IST%mH_snow, trim(mesg)//" IST%mH_snow", G%HI, haloshift=hs, scale=US%RZ_to_kg_m2)
-  call hchksum(IST%enth_snow(:,:,:,1), trim(mesg)//" IST%enth_snow", G%HI, haloshift=hs, scale=US%Q_to_J_kg)
-  call hchksum(IST%mH_pond, trim(mesg)//" IST%mH_pond", G%HI, haloshift=hs, scale=US%RZ_to_kg_m2)
+  call hchksum(IST%mH_snow, trim(mesg)//" IST%mH_snow", G%HI, haloshift=hs, unscale=US%RZ_to_kg_m2)
+  call hchksum(IST%enth_snow(:,:,:,1), trim(mesg)//" IST%enth_snow", G%HI, haloshift=hs, unscale=US%Q_to_J_kg)
+  call hchksum(IST%mH_pond, trim(mesg)//" IST%mH_pond", G%HI, haloshift=hs, unscale=US%RZ_to_kg_m2)
+  call hchksum(IST%mH_pond_ice, trim(mesg)//" IST%mH_pond_ice", G%HI, haloshift=hs, unscale=US%RZ_to_kg_m2)
 
   if (allocated(IST%u_ice_B) .and. allocated(IST%v_ice_B)) then
-    call Bchksum_pair(mesg//" IST%[uv]_ice_B", IST%u_ice_B, IST%v_ice_B, G, halos=hs, scale=US%L_T_to_m_s)
-    call check_redundant_B(mesg//" IST%u/v_ice", IST%u_ice_B, IST%v_ice_B, G)
+    call Bchksum_pair(mesg//" IST%[uv]_ice_B", IST%u_ice_B, IST%v_ice_B, G, halos=hs, unscale=US%L_T_to_m_s)
+    call check_redundant_B(mesg//" IST%u/v_ice", IST%u_ice_B, IST%v_ice_B, G, unscale=US%L_T_to_m_s)
   endif
   if (allocated(IST%u_ice_C) .and. allocated(IST%v_ice_C)) then
-    call uvchksum(mesg//" IST%[uv]_ice_C", IST%u_ice_C, IST%v_ice_C, G, halos=hs, scale=US%L_T_to_m_s)
-    call check_redundant_C(mesg//" IST%u/v_ice_C", IST%u_ice_C, IST%v_ice_C, G)
+    call uvchksum(mesg//" IST%[uv]_ice_C", IST%u_ice_C, IST%v_ice_C, G, halos=hs, unscale=US%L_T_to_m_s)
+    call check_redundant_C(mesg//" IST%u/v_ice_C", IST%u_ice_C, IST%v_ice_C, G, unscale=US%L_T_to_m_s)
   endif
 
 end subroutine IST_chksum
