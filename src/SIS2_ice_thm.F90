@@ -167,7 +167,7 @@ end subroutine SIS2_ice_thm_init
 !> ice_temp_SIS2 calculates the updated snow and ice enthalpy and new skin
 !!    temperature after due to surface forcing and vertical diffusion of heat.
 subroutine ice_temp_SIS2(m_pond, m_snow, m_ice, enthalpy, sice, SF_0, dSF_dT, sol, tfw, fb, &
-                         tsurf, dtt, NkIce, tmelt, bmelt, CS, US, ITV, check_conserve)
+                         tsurf, dtt, NkIce, tmelt, bmelt, CS, US, ITV, check_conserve, Ks_Lecomte)
 
   real, intent(in   ) :: m_pond  !< pond mass per unit area [R Z ~> kg m-2]
   real, intent(in   ) :: m_snow  !< snow mass per unit area [R Z ~> kg m-2]
@@ -192,7 +192,8 @@ subroutine ice_temp_SIS2(m_pond, m_snow, m_ice, enthalpy, sice, SF_0, dSF_dT, so
   type(unit_scale_type), intent(in) :: US  !< A structure with unit conversion factors
   type(ice_thermo_type), intent(in) :: ITV !< The ice thermodynamic parameter structure.
   logical, optional, intent(in) :: check_conserve !< If true, check for local heat conservation.
-
+  real,    optional, intent(in) :: Ks_Lecomte !< The thermal conductivity of the snow based on the
+                                              ! Lecomte (2013) parameterization [Q R Z T-1 C-1 ~> W m-1 degC-1].
   ! Local variables for temperature calculation [see Winton (1999) section II.A.]
   ! note:  here equations are multiplied by hi to improve thin ice accuracy
   real, dimension(0:NkIce) :: temp_est   ! An estimated snow and ice temperature [C ~> degC].
@@ -271,14 +272,18 @@ subroutine ice_temp_SIS2(m_pond, m_snow, m_ice, enthalpy, sice, SF_0, dSF_dT, so
   hsnow_eff = mL_snow / rho_snow + max(1.0e-35*US%m_to_Z, 1.0e-20*CS%H_lo_lim)
 
   ! Set the surface freezing temperature
-  tsf = tfi(1) ; if (mL_snow>0.0) tsf = 0.0
+  tsf = tfi(1) ; if (mL_snow>0.0) tsf = 0.0  
 
   ! Set some diffusive coupling coefficients between the various layers.
   kk = CS%Ki / hL_ice_eff     ! full ice layer conductivity
-  k10 = 2.0*(CS%Ks*CS%Ki) / (hL_ice_eff*CS%Ks + hsnow_eff*CS%Ki) ! coupling ice layer 1 to snow
-  k0a = (CS%Ks*dSF_dT) / (0.5*dSF_dT*hsnow_eff + CS%Ks)      ! coupling snow to "air"
-  k0skin = 2.0*CS%Ks / hsnow_eff
-  k0a_x_ta = (CS%Ks*SF_0) / (0.5*dSF_dT*hsnow_eff + CS%Ks) ! coupling times "air" temperature
+  !k10 = 2.0*(CS%Ks*CS%Ki) / (hL_ice_eff*CS%Ks + hsnow_eff*CS%Ki) ! coupling ice layer 1 to snow
+  !k0a = (CS%Ks*dSF_dT) / (0.5*dSF_dT*hsnow_eff + CS%Ks)      ! coupling snow to "air"
+  !k0skin = 2.0*CS%Ks / hsnow_eff
+  !k0a_x_ta = (CS%Ks*SF_0) / (0.5*dSF_dT*hsnow_eff + CS%Ks) ! coupling times "air" temperature
+  k10 = 2.0*(Ks_Lecomte*CS%Ki) / (hL_ice_eff*Ks_Lecomte + hsnow_eff*CS%Ki) ! coupling ice layer 1 to snow
+  k0a = (Ks_Lecomte*dSF_dT) / (0.5*dSF_dT*hsnow_eff + Ks_Lecomte)      ! coupling snow to "air"
+  k0skin = 2.0*Ks_Lecomte / hsnow_eff
+  k0a_x_ta = (Ks_Lecomte*SF_0) / (0.5*dSF_dT*hsnow_eff + Ks_Lecomte) ! coupling times "air" temperature
 
   ! Determine the enthalpy for conservation checks.
   m_lay(0) = mL_snow ; do k=1,NkIce ; m_lay(k) = mL_ice ; enddo

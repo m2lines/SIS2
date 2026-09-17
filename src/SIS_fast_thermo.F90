@@ -25,8 +25,10 @@ use MOM_error_handler, only : SIS_error=>MOM_error, FATAL, WARNING, SIS_mesg=>MO
 use MOM_error_handler, only : callTree_enter, callTree_leave, callTree_waypoint
 use MOM_file_parser,   only : get_param, log_param, log_version, param_file_type
 use MOM_time_manager,  only : time_type, time_type_to_real, operator(+), operator(-)
+use MOM_time_manager,  only : get_date, get_time, set_date
 use MOM_time_manager,  only : operator(>), operator(*), operator(/), operator(/=)
 use MOM_unit_scaling,  only : unit_scale_type
+use MOM_io,            only : MOM_read_data
 
 use SIS_debugging,     only : hchksum
 use SIS_diag_mediator, only : SIS_diag_ctrl
@@ -78,6 +80,7 @@ type fast_thermo_CS ; private
 
   !> A pointer to the control structures for subsidiary modules.
   type(SIS2_ice_thm_CS), pointer  :: ice_thm_CSp => NULL()
+  type(time_type), pointer :: Time => NULL() !< A pointer to the ocean model's clock.
 end type fast_thermo_CS
 
 contains
@@ -627,6 +630,15 @@ subroutine do_update_ice_model_fast(Atmos_boundary, IST, sOSS, Rad, FIA, &
   real :: SW_absorbed ! Absorbed shortwave heating [Q R Z T-1 ~> W m-2]
   real :: I_Nk     ! The inverse of the number of internal ice layers [nondim].
 
+  !WG
+  integer :: year, month, day, hour, minute, second
+  integer :: sec, yr_days
+  real    :: Ks_Lecomte
+  character(len=300) :: filename
+  real, dimension(G%isd:G%ied,G%jsd:G%jed) :: &
+    winds  ! The daily climatology wind speed computed from
+           ! ERA5 [m s-1].
+
   if (.not.associated(CS)) call SIS_error(FATAL, &
          "SIS_fast_thermo: Module must be initialized before it is used.")
 
@@ -714,6 +726,15 @@ subroutine do_update_ice_model_fast(Atmos_boundary, IST, sOSS, Rad, FIA, &
   !
   dt_fast = US%s_to_T*time_type_to_real(Time_step)
 
+  !!! WG Start !!!
+  year = 0; month = 0; day = 0; hour = 0; minute = 0; second = 0
+  sec = 0; yr_days = 0; winds = 0.0
+  call get_date(CS%Time, year, month, day, hour, minute, second)
+  call get_time(CS%Time - set_date(year, 1, 1, 0, 0, 0), sec, yr_days)
+  write(filename, "(A,I3.3,A)") "/scratch/cimes/wg4031/ERA5/WindClimatology/1982-2017_winds_day", yr_days + 1, ".nc"
+  call MOM_read_data(filename=filename, fieldname='w', data=winds, MOM_Domain=G%Domain, timelevel=1, global_file=.true.)
+  !!! WG End !!!
+
   !$OMP parallel do default(none) shared(isc,iec,jsc,jec,ncat,NkIce,nb,IST,dshdt,devapdt,dlwdt, &
   !$OMP                                  flux_sw,flux_sh,evap,flux_lw,dt_fast,flux_lh,G,US,&
   !$OMP                                  S_col,I_Nk,LatHtVap,IG,sOSS,FIA,Rad,CS) &
@@ -756,6 +777,9 @@ subroutine do_update_ice_model_fast(Atmos_boundary, IST, sOSS, Rad, FIA, &
       SW_abs_col(0) = Rad%sw_abs_snow(i,j,k)*sw_tot
       do m=1,NkIce ; SW_abs_col(m) = Rad%sw_abs_ice(i,j,k,m)*sw_tot ; enddo
 
+      !WG
+      Ks_Lecomte = 0.0424 * winds(i,j) + 0.0295
+
       !   This call updates the snow and ice temperatures and accumulates the
       ! surface and bottom melting/freezing energy.  The ice and snow do not
       ! actually lose or gain any mass from freezing or melting.
@@ -764,7 +788,7 @@ subroutine do_update_ice_model_fast(Atmos_boundary, IST, sOSS, Rad, FIA, &
                          enth_col, S_col, hf_0, dhf_dt, SW_abs_col, &
                          sOSS%T_fr_ocn(i,j), sOSS%bheat(i,j), Tskin, &
                          dt_fast, NkIce, FIA%tmelt(i,j,k), FIA%bmelt(i,j,k), &
-                         CS%ice_thm_CSp, US, IST%ITV, CS%column_check)
+                         CS%ice_thm_CSp, US, IST%ITV, CS%column_check, Ks_Lecomte)
       IST%enth_snow(i,j,k,1) = enth_col(0)
       do m=1,NkIce ; IST%enth_ice(i,j,k,m) = enth_col(m) ; enddo
 
@@ -1268,6 +1292,8 @@ subroutine SIS_fast_thermo_init(Time, G, IG, param_file, diag, CS)
   else
     allocate(CS)
   endif
+
+  CS%Time => Time
 
   ! Read all relevant parameters and write them to the model log.
   call log_version(param_file, mdl, version, &
