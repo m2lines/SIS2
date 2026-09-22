@@ -632,12 +632,12 @@ subroutine do_update_ice_model_fast(Atmos_boundary, IST, sOSS, Rad, FIA, &
 
   !WG
   integer :: year, month, day, hour, minute, second
-  integer :: sec, yr_days
+  integer :: sec, yr_days, clim_lev
   real    :: Ks_Lecomte
   character(len=300) :: filename
   real, dimension(G%isd:G%ied,G%jsd:G%jed) :: &
-    winds  ! The daily climatology wind speed computed from
-           ! ERA5 [m s-1].
+    winds  ! The 3-hourly climatology wind speed computed from
+           ! JRA55-do over 1971-2000 [m s-1].
 
   if (.not.associated(CS)) call SIS_error(FATAL, &
          "SIS_fast_thermo: Module must be initialized before it is used.")
@@ -731,8 +731,10 @@ subroutine do_update_ice_model_fast(Atmos_boundary, IST, sOSS, Rad, FIA, &
   sec = 0; yr_days = 0; winds = 0.0
   call get_date(CS%Time, year, month, day, hour, minute, second)
   call get_time(CS%Time - set_date(year, 1, 1, 0, 0, 0), sec, yr_days)
-  write(filename, "(A,I3.3,A)") "/scratch/cimes/wg4031/ERA5/WindClimatology/1982-2017_winds_day", yr_days + 1, ".nc"
-  call MOM_read_data(filename=filename, fieldname='w', data=winds, MOM_Domain=G%Domain, timelevel=1, global_file=.true.)
+  ! Climatology index (0-based) = day-of-year*8 + 3-hourly bin; +1 for the Fortran 1-based timelevel.
+  clim_lev = yr_days*8 + sec/10800 + 1
+  write(filename, "(A,I3.3,A)") "/scratch/cimes/wg4031/DAMPEn/FORCING/JRA/raw/JRA55_3hr_climatology_windspeed_1971-2000_OM4grid.nc"
+  call MOM_read_data(filename=filename, fieldname='speed', data=winds, MOM_Domain=G%Domain, timelevel=clim_lev, global_file=.true.)
   !!! WG End !!!
 
   !$OMP parallel do default(none) shared(isc,iec,jsc,jec,ncat,NkIce,nb,IST,dshdt,devapdt,dlwdt, &
