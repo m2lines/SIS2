@@ -133,6 +133,7 @@ type dyn_trans_CS ; private
 
   !!! WG !!!
   logical     :: do_ML !< If true, perform ML-based bias correction
+  logical     :: Lecomte_density !< If true, use the Lecomte snow density parameterization
   !!! WG end !!!
 
   !>@{ Diagnostic IDs
@@ -846,7 +847,8 @@ subroutine ice_state_cleanup(IST, OSS, IOF, dt_slow, G, US, IG, CS, tracer_CSp, 
   call cpu_clock_begin(iceClock9)
 
   call enable_SIS_averaging(US%T_to_s*dt_slow, CS%Time, CS%diag)
-  call post_ice_state_diagnostics(CS%IDs, IST, OSS, IOF, dt_slow, CS%Time, G, US, IG, CS%diag, ML, CS%do_ML) !WG
+  call post_ice_state_diagnostics(CS%IDs, IST, OSS, IOF, dt_slow, CS%Time, G, US, IG, CS%diag, & 
+                                    ML, CS%do_ML, CS%Lecomte_density) !WG
   call SIS_diag_send_complete()
   call disable_SIS_averaging(CS%diag)
 
@@ -2470,6 +2472,8 @@ subroutine SIS_dyn_trans_init(Time, G, US, IG, param_file, diag, CS, output_dir,
                  debuggingParam=.true.)
   call get_param(param_file, mdl, "DO_ML", CS%do_ML, &
                  "Perform machine learning based bias correction.", default=.false.) !WG
+  call get_param(param_file, mdl, "LECOMTE_DENSITY", CS%Lecomte_density, &
+                 "If true, use the Lecomte snow density parameterization.", default=.false.) !WG
 
   CS%complete_ice_cover = 1.0 - 2.0*epsilon(CS%complete_ice_cover)
 

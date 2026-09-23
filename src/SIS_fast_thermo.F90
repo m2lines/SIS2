@@ -81,6 +81,10 @@ type fast_thermo_CS ; private
   !> A pointer to the control structures for subsidiary modules.
   type(SIS2_ice_thm_CS), pointer  :: ice_thm_CSp => NULL()
   type(time_type), pointer :: Time => NULL() !< A pointer to the ocean model's clock.
+  real, pointer, dimension(:,:) :: winds => NULL() !< Cached JRA55 wind climatology speed [m s-1],
+                          !! read once per fast update and reused by redo_update_ice_model_fast.
+  logical :: Lecomte_density !< If true, use the Lecomte et al. parameterization for snow density.
+  logical :: Lecomte_Ks !< If true, use the Lecomte et al. parameterization for the snow thermal conductivity
 end type fast_thermo_CS
 
 contains
@@ -633,11 +637,12 @@ subroutine do_update_ice_model_fast(Atmos_boundary, IST, sOSS, Rad, FIA, &
   !WG
   integer :: year, month, day, hour, minute, second
   integer :: sec, yr_days, clim_lev
-  real    :: Ks_Lecomte
+  real    :: Ks_wind
+  real    :: rho_snow_wind
   character(len=300) :: filename
   real, dimension(G%isd:G%ied,G%jsd:G%jed) :: &
     winds  ! The 3-hourly climatology wind speed computed from
-           ! JRA55-do over 1971-2000 [m s-1].
+          ! JRA55-do over 1971-2000 [m s-1].
 
   if (.not.associated(CS)) call SIS_error(FATAL, &
          "SIS_fast_thermo: Module must be initialized before it is used.")
@@ -727,14 +732,19 @@ subroutine do_update_ice_model_fast(Atmos_boundary, IST, sOSS, Rad, FIA, &
   dt_fast = US%s_to_T*time_type_to_real(Time_step)
 
   !!! WG Start !!!
-  year = 0; month = 0; day = 0; hour = 0; minute = 0; second = 0
-  sec = 0; yr_days = 0; winds = 0.0
-  call get_date(CS%Time, year, month, day, hour, minute, second)
-  call get_time(CS%Time - set_date(year, 1, 1, 0, 0, 0), sec, yr_days)
-  ! Climatology index (0-based) = day-of-year*8 + 3-hourly bin; +1 for the Fortran 1-based timelevel.
-  clim_lev = yr_days*8 + sec/10800 + 1
-  write(filename, "(A,I3.3,A)") "/scratch/cimes/wg4031/DAMPEn/FORCING/JRA/raw/JRA55_3hr_climatology_windspeed_1971-2000_OM4grid.nc"
-  call MOM_read_data(filename=filename, fieldname='speed', data=winds, MOM_Domain=G%Domain, timelevel=clim_lev, global_file=.true.)
+  if ((CS%Lecomte_density) .or. (CS%Lecomte_Ks)) then
+    year = 0; month = 0; day = 0; hour = 0; minute = 0; second = 0
+    sec = 0; yr_days = 0; winds = 0.0
+    call get_date(CS%Time, year, month, day, hour, minute, second)
+    call get_time(CS%Time - set_date(year, 1, 1, 0, 0, 0), sec, yr_days)
+    ! Climatology index (0-based) = day-of-year*8 + 3-hourly bin; +1 for the Fortran 1-based timelevel.
+    clim_lev = yr_days*8 + sec/10800 + 1
+    write(filename, "(A,I3.3,A)") "/scratch/cimes/wg4031/DAMPEn/FORCING/JRA/raw/JRA55_3hr_climatology_windspeed_1971-2000_OM4grid.nc"
+    call MOM_read_data(filename=trim(filename), fieldname='speed', data=winds, MOM_Domain=G%Domain, timelevel=clim_lev, global_file=.true.)
+    ! Cache winds so redo_update_ice_model_fast can reuse it without another MOM_read_data call.
+    if (.not.associated(CS%winds)) allocate(CS%winds(G%isd:G%ied,G%jsd:G%jed))
+    CS%winds(:,:) = winds(:,:)
+  endif
   !!! WG End !!!
 
   !$OMP parallel do default(none) shared(isc,iec,jsc,jec,ncat,NkIce,nb,IST,dshdt,devapdt,dlwdt, &
@@ -780,17 +790,44 @@ subroutine do_update_ice_model_fast(Atmos_boundary, IST, sOSS, Rad, FIA, &
       do m=1,NkIce ; SW_abs_col(m) = Rad%sw_abs_ice(i,j,k,m)*sw_tot ; enddo
 
       !WG
-      Ks_Lecomte = 0.0424 * winds(i,j) + 0.0295
+      if (CS%Lecomte_Ks) then  
+        Ks_wind = (0.0424 * winds(i,j) + 0.0295) * &
+                  US%W_m2_to_QRZ_T * US%m_to_Z * US%C_to_degC
+      endif
+      if (CS%Lecomte_density) then
+        rho_snow_wind = (44.6 * winds(i,j) + 174.0) * US%kg_m3_to_R
+      endif
 
       !   This call updates the snow and ice temperatures and accumulates the
       ! surface and bottom melting/freezing energy.  The ice and snow do not
       ! actually lose or gain any mass from freezing or melting.
       ! mw/new - pass melt pond (surface temp fixed at freezing when present)
-      call ice_temp_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), IST%mH_ice(i,j,k), &
-                         enth_col, S_col, hf_0, dhf_dt, SW_abs_col, &
-                         sOSS%T_fr_ocn(i,j), sOSS%bheat(i,j), Tskin, &
-                         dt_fast, NkIce, FIA%tmelt(i,j,k), FIA%bmelt(i,j,k), &
-                         CS%ice_thm_CSp, US, IST%ITV, CS%column_check, Ks_Lecomte)
+      if ((CS%Lecomte_Ks) .and. (CS%Lecomte_density)) then
+        call ice_temp_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), IST%mH_ice(i,j,k), &
+                          enth_col, S_col, hf_0, dhf_dt, SW_abs_col, &
+                          sOSS%T_fr_ocn(i,j), sOSS%bheat(i,j), Tskin, &
+                          dt_fast, NkIce, FIA%tmelt(i,j,k), FIA%bmelt(i,j,k), &
+                          CS%ice_thm_CSp, US, IST%ITV, CS%column_check, Ks_wind=Ks_wind, rho_snow_wind=rho_snow_wind)
+      elseif ((CS%Lecomte_Ks) .and. (.not. CS%Lecomte_density)) then
+        call ice_temp_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), IST%mH_ice(i,j,k), &
+                          enth_col, S_col, hf_0, dhf_dt, SW_abs_col, &
+                          sOSS%T_fr_ocn(i,j), sOSS%bheat(i,j), Tskin, &
+                          dt_fast, NkIce, FIA%tmelt(i,j,k), FIA%bmelt(i,j,k), &
+                          CS%ice_thm_CSp, US, IST%ITV, CS%column_check, Ks_wind=Ks_wind)
+      elseif ((.not. CS%Lecomte_Ks) .and. (CS%Lecomte_density)) then
+        call ice_temp_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), IST%mH_ice(i,j,k), &
+                          enth_col, S_col, hf_0, dhf_dt, SW_abs_col, &
+                          sOSS%T_fr_ocn(i,j), sOSS%bheat(i,j), Tskin, &
+                          dt_fast, NkIce, FIA%tmelt(i,j,k), FIA%bmelt(i,j,k), &
+                          CS%ice_thm_CSp, US, IST%ITV, CS%column_check, rho_snow_wind=rho_snow_wind)
+      elseif ((.not. CS%Lecomte_Ks) .and. (.not. CS%Lecomte_density)) then
+        call ice_temp_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), IST%mH_ice(i,j,k), &
+                          enth_col, S_col, hf_0, dhf_dt, SW_abs_col, &
+                          sOSS%T_fr_ocn(i,j), sOSS%bheat(i,j), Tskin, &
+                          dt_fast, NkIce, FIA%tmelt(i,j,k), FIA%bmelt(i,j,k), &
+                          CS%ice_thm_CSp, US, IST%ITV, CS%column_check)
+      endif
+
       IST%enth_snow(i,j,k,1) = enth_col(0)
       do m=1,NkIce ; IST%enth_ice(i,j,k,m) = enth_col(m) ; enddo
 
@@ -931,6 +968,8 @@ subroutine redo_update_ice_model_fast(IST, sOSS, Rad, FIA, TSF, optics_CSp, &
   real :: TSF_sw_tot ! The total of all shortwave fluxes into the snow, ice,
                      ! and ocean that were previously stored in TSF [Q R Z T-1 ~> W m-2].
   real :: I_Nk       ! The inverse of the number of internal ice layers [nondim].
+  real    :: Ks_wind       ! A wind-speed-based snow thermal conductivity [Q R Z T-1 C-1 ~> W m-1 degC-1].
+  real    :: rho_snow_wind ! A wind-speed-based snow density [R ~> kg m-3].
 
   if (.not.associated(CS)) call SIS_error(FATAL, &
          "SIS_fast_thermo: Module must be initialized before it is used.")
@@ -1003,7 +1042,7 @@ subroutine redo_update_ice_model_fast(IST, sOSS, Rad, FIA, TSF, optics_CSp, &
   !$OMP    shared( isc,iec,jsc,jec,nb,ncat,NkIce,FIA,IST,sOSS,Rad,US,IG,CS,optics_CSp,dt_here, &
   !$OMP            use_new_albedos,sw_top_chg,S_col,T_bright,max_itt,do_any_j,do_optics) &
   !$OMP    private(albedos,sw_abs_lay,flux_sw_prev,latent,enth_col,sw_tot,dSWt_dt,dhf_dt,hf_0, &
-  !$OMP            Tskin,SW_abs_col,snow_wt,enth_col_in,tmelt_tmp,bmelt_tmp,Tskin_prev)
+  !$OMP            Tskin,SW_abs_col,snow_wt,enth_col_in,tmelt_tmp,bmelt_tmp,Tskin_prev,Ks_wind,rho_snow_wind)
    !,Tskin_itt,SW_tot_itt)
   do j=jsc,jec ; if (do_any_j(j)) then
     ! Only work on j-rows with some ice in them.
@@ -1012,11 +1051,24 @@ subroutine redo_update_ice_model_fast(IST, sOSS, Rad, FIA, TSF, optics_CSp, &
     ! can depend on the surface skin temperature, which is not yet well known,
     ! there may be some iteration for self-consistency.
     do k=1,ncat ; do i=isc,iec ; if (do_optics(i,j) .and. IST%part_size(i,j,k) > 0.0) then
-      call ice_optics_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), IST%mH_ice(i,j,k), &
-               Rad%Tskin_Rad(i,j,k), sOSS%T_fr_ocn(i,j), IG%NkIce, &
-               albedos, Rad%sw_abs_sfc(i,j,k), Rad%sw_abs_snow(i,j,k), &
-               sw_abs_lay, Rad%sw_abs_ocn(i,j,k), Rad%sw_abs_int(i,j,k), &
-               US, optics_CSp, IST%ITV, coszen_in=Rad%coszen_lastrad(i,j))
+      if (CS%Lecomte_Ks) then
+        Ks_wind = (0.0424 * CS%winds(i,j) + 0.0295) * &
+                    US%W_m2_to_QRZ_T * US%m_to_Z * US%C_to_degC
+      endif
+      if (CS%Lecomte_density) then
+        rho_snow_wind = (44.6 * CS%winds(i,j) + 174.0) * US%kg_m3_to_R
+        call ice_optics_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), IST%mH_ice(i,j,k), &
+                Rad%Tskin_Rad(i,j,k), sOSS%T_fr_ocn(i,j), IG%NkIce, &
+                albedos, Rad%sw_abs_sfc(i,j,k), Rad%sw_abs_snow(i,j,k), &
+                sw_abs_lay, Rad%sw_abs_ocn(i,j,k), Rad%sw_abs_int(i,j,k), &
+                US, optics_CSp, IST%ITV, coszen_in=Rad%coszen_lastrad(i,j), rho_snow_wind=rho_snow_wind)
+      else
+        call ice_optics_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), IST%mH_ice(i,j,k), &
+                Rad%Tskin_Rad(i,j,k), sOSS%T_fr_ocn(i,j), IG%NkIce, &
+                albedos, Rad%sw_abs_sfc(i,j,k), Rad%sw_abs_snow(i,j,k), &
+                sw_abs_lay, Rad%sw_abs_ocn(i,j,k), Rad%sw_abs_int(i,j,k), &
+                US, optics_CSp, IST%ITV, coszen_in=Rad%coszen_lastrad(i,j))
+      endif
 
       if (CS%max_Tskin_itt > 0) then
         ! Determine a new skin temperature that is consistent with the updated
@@ -1054,20 +1106,48 @@ subroutine redo_update_ice_model_fast(IST, sOSS, Rad, FIA, TSF, optics_CSp, &
           tmelt_tmp = 0.0 ; bmelt_tmp = 0.0 ; Tskin_prev = Tskin
           !   This call only estimates an updated skin temperature for
           ! calculating the ice optical properties.
-          call ice_temp_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), IST%mH_ice(i,j,k), &
+          if ((CS%Lecomte_Ks) .and. (CS%Lecomte_density)) then
+            call ice_temp_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), IST%mH_ice(i,j,k), &
+                   enth_col, S_col, hf_0, dhf_dt, SW_abs_col, &
+                   sOSS%T_fr_ocn(i,j), sOSS%bheat(i,j), Tskin, &
+                   0.5*dt_here, NkIce, tmelt_tmp, bmelt_tmp, CS%ice_thm_CSp, US, IST%ITV, &
+                   Ks_wind=Ks_wind, rho_snow_wind=rho_snow_wind)
+          elseif ((CS%Lecomte_Ks) .and. (.not. CS%Lecomte_density)) then
+            call ice_temp_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), IST%mH_ice(i,j,k), &
+                   enth_col, S_col, hf_0, dhf_dt, SW_abs_col, &
+                   sOSS%T_fr_ocn(i,j), sOSS%bheat(i,j), Tskin, &
+                   0.5*dt_here, NkIce, tmelt_tmp, bmelt_tmp, CS%ice_thm_CSp, US, IST%ITV, &
+                   Ks_wind=Ks_wind)
+          elseif ((.not. CS%Lecomte_Ks) .and. (CS%Lecomte_density)) then
+            call ice_temp_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), IST%mH_ice(i,j,k), &
+                   enth_col, S_col, hf_0, dhf_dt, SW_abs_col, &
+                   sOSS%T_fr_ocn(i,j), sOSS%bheat(i,j), Tskin, &
+                   0.5*dt_here, NkIce, tmelt_tmp, bmelt_tmp, CS%ice_thm_CSp, US, IST%ITV, &
+                   rho_snow_wind=rho_snow_wind)
+          elseif ((.not. CS%Lecomte_Ks) .and. (.not. CS%Lecomte_density)) then
+            call ice_temp_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), IST%mH_ice(i,j,k), &
                    enth_col, S_col, hf_0, dhf_dt, SW_abs_col, &
                    sOSS%T_fr_ocn(i,j), sOSS%bheat(i,j), Tskin, &
                    0.5*dt_here, NkIce, tmelt_tmp, bmelt_tmp, CS%ice_thm_CSp, US, IST%ITV)
+          endif  
 
 !         ! These are here to debug the iterations.
 !         Tskin_itt(itt) = Tskin
 !         SW_tot_itt(itt) = SW_tot
-
-          call ice_optics_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), &
-                  IST%mH_ice(i,j,k), Tskin, sOSS%T_fr_ocn(i,j), IG%NkIce, &
-                  albedos, Rad%sw_abs_sfc(i,j,k), Rad%sw_abs_snow(i,j,k), &
-                  sw_abs_lay, Rad%sw_abs_ocn(i,j,k), Rad%sw_abs_int(i,j,k), &
-                  US, optics_CSp, IST%ITV, coszen_in=Rad%coszen_lastrad(i,j))
+          
+          if (CS%Lecomte_density) then
+            call ice_optics_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), &
+                    IST%mH_ice(i,j,k), Tskin, sOSS%T_fr_ocn(i,j), IG%NkIce, &
+                    albedos, Rad%sw_abs_sfc(i,j,k), Rad%sw_abs_snow(i,j,k), &
+                    sw_abs_lay, Rad%sw_abs_ocn(i,j,k), Rad%sw_abs_int(i,j,k), &
+                    US, optics_CSp, IST%ITV, coszen_in=Rad%coszen_lastrad(i,j), rho_snow_wind=rho_snow_wind)
+          else
+            call ice_optics_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), &
+                    IST%mH_ice(i,j,k), Tskin, sOSS%T_fr_ocn(i,j), IG%NkIce, &
+                    albedos, Rad%sw_abs_sfc(i,j,k), Rad%sw_abs_snow(i,j,k), &
+                    sw_abs_lay, Rad%sw_abs_ocn(i,j,k), Rad%sw_abs_int(i,j,k), &
+                    US, optics_CSp, IST%ITV, coszen_in=Rad%coszen_lastrad(i,j))
+          endif
           ! The feedbacks on the shortwave radiation are destabilizing, but only
           ! over a limited temperature range, so stop iterating (1) if the skin
           ! temperature is changing by a small enough amount, (2) there is
@@ -1105,7 +1185,7 @@ subroutine redo_update_ice_model_fast(IST, sOSS, Rad, FIA, TSF, optics_CSp, &
   !$OMP    shared( isc,iec,jsc,jec,nb,ncat,NkIce,FIA,IST,TSF,sOSS,Rad,IG,US,CS,dt_here, &
   !$OMP            nbmerge,S_col,do_any_j,do_optics) &
   !$OMP    private(rescale,sw_tot_ice_band,ice_sw_tot,TSF_sw_tot,latent,enth_col,sw_tot, &
-  !$OMP            dhf_dt,hf_0,Tskin,SW_abs_col,snow_wt,enth_col_in)
+  !$OMP            dhf_dt,hf_0,Tskin,SW_abs_col,snow_wt,enth_col_in,Ks_wind,rho_snow_wind)
   do j=jsc,jec ; if (do_any_j(j)) then
     ! Only work on j-rows with some ice in them.
 
@@ -1163,15 +1243,47 @@ subroutine redo_update_ice_model_fast(IST, sOSS, Rad, FIA, TSF, optics_CSp, &
       SW_abs_col(0) = Rad%sw_abs_snow(i,j,k)*sw_tot
       do m=1,NkIce ; SW_abs_col(m) = Rad%sw_abs_ice(i,j,k,m)*sw_tot ; enddo
 
+      if (CS%Lecomte_Ks) then
+        Ks_wind = (0.0424 * CS%winds(i,j) + 0.0295) * &
+                    US%W_m2_to_QRZ_T * US%m_to_Z * US%C_to_degC
+      endif
+      if (CS%Lecomte_density) then
+        rho_snow_wind = (44.6 * CS%winds(i,j) + 174.0) * US%kg_m3_to_R
+      endif
+
       !   This call updates the snow and ice temperatures and accumulates the
       ! surface and bottom melting/freezing energy.  The ice and snow do not
       ! actually lose or gain any mass from freezing or melting.
       ! mw/new - pass melt pond (surface temp fixed at freezing when present)
-      call ice_temp_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), IST%mH_ice(i,j,k), &
+      if ((CS%Lecomte_Ks) .and. (CS%Lecomte_density)) then
+        call ice_temp_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), IST%mH_ice(i,j,k), &
+                         enth_col, S_col, hf_0, dhf_dt, SW_abs_col, &
+                         sOSS%T_fr_ocn(i,j), sOSS%bheat(i,j), Tskin, &
+                         dt_here, NkIce, FIA%tmelt(i,j,k), FIA%bmelt(i,j,k), &
+                         CS%ice_thm_CSp, US, IST%ITV, CS%column_check, & 
+                         Ks_wind=Ks_wind, rho_snow_wind=rho_snow_wind)
+      elseif ((CS%Lecomte_Ks) .and. (.not. CS%Lecomte_density)) then
+        call ice_temp_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), IST%mH_ice(i,j,k), &
+                         enth_col, S_col, hf_0, dhf_dt, SW_abs_col, &
+                         sOSS%T_fr_ocn(i,j), sOSS%bheat(i,j), Tskin, &
+                         dt_here, NkIce, FIA%tmelt(i,j,k), FIA%bmelt(i,j,k), &
+                         CS%ice_thm_CSp, US, IST%ITV, CS%column_check, & 
+                         Ks_wind=Ks_wind)
+      elseif ((.not. CS%Lecomte_Ks) .and. (CS%Lecomte_density)) then
+        call ice_temp_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), IST%mH_ice(i,j,k), &
+                         enth_col, S_col, hf_0, dhf_dt, SW_abs_col, &
+                         sOSS%T_fr_ocn(i,j), sOSS%bheat(i,j), Tskin, &
+                         dt_here, NkIce, FIA%tmelt(i,j,k), FIA%bmelt(i,j,k), &
+                         CS%ice_thm_CSp, US, IST%ITV, CS%column_check, & 
+                         rho_snow_wind=rho_snow_wind)
+      elseif ((.not. CS%Lecomte_Ks) .and. (.not. CS%Lecomte_density)) then
+        call ice_temp_SIS2(IST%mH_pond(i,j,k), IST%mH_snow(i,j,k), IST%mH_ice(i,j,k), &
                          enth_col, S_col, hf_0, dhf_dt, SW_abs_col, &
                          sOSS%T_fr_ocn(i,j), sOSS%bheat(i,j), Tskin, &
                          dt_here, NkIce, FIA%tmelt(i,j,k), FIA%bmelt(i,j,k), &
                          CS%ice_thm_CSp, US, IST%ITV, CS%column_check)
+      endif  
+      
       IST%enth_snow(i,j,k,1) = enth_col(0)
       do m=1,NkIce ; IST%enth_ice(i,j,k,m) = enth_col(m) ; enddo
 
@@ -1335,6 +1447,13 @@ subroutine SIS_fast_thermo_init(Time, G, IG, param_file, diag, CS)
   call get_param(param_file, mdl, "DEBUG_FAST_ICE", CS%debug_fast, &
                  "If true, write out verbose debugging data on the fast ice PEs.", &
                  default=debug, debuggingParam=.true.)
+  !WG
+  call get_param(param_file, mdl, "LECOMTE_KS", CS%Lecomte_Ks, &
+                 "If true, use the Lecomte parameterization for snow thermal conductivity.", &
+                 default=.false.)
+  call get_param(param_file, mdl, "LECOMTE_DENSITY", CS%Lecomte_density, &
+                 "If true, use the Lecomte parameterization for snow density.", &
+                 default=.false.)
 
   call SIS2_ice_thm_init(G%US, param_file, CS%ice_thm_CSp)
 

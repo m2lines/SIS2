@@ -20,6 +20,8 @@ use MOM_error_handler, only : callTree_enter, callTree_leave, callTree_waypoint
 use MOM_file_parser,   only : get_param, read_param, log_param, log_version, param_file_type
 use MOM_time_manager,  only : time_type
 use MOM_unit_scaling,  only : unit_scale_type
+use MOM_io,            only : MOM_read_data
+use MOM_time_manager,  only : get_date, get_time, set_date, operator(-)
 
 use SIS_diag_mediator, only : enable_SIS_averaging, disable_SIS_averaging
 use SIS_diag_mediator, only : post_SIS_data, post_data=>post_SIS_data
@@ -65,7 +67,7 @@ contains
 
 !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~!
 !> Offer diagnostics of the slowly evolving sea ice state.
-subroutine post_ice_state_diagnostics(IDs, IST, OSS, IOF, dt_slow, Time, G, US, IG, diag, ML, do_ML) !WG
+subroutine post_ice_state_diagnostics(IDs, IST, OSS, IOF, dt_slow, Time, G, US, IG, diag, ML, do_ML, Lecomte_density) !WG
   type(ice_state_diags_type), pointer       :: IDs !< The control structure for the SIS_dyn_trans module
   type(ice_state_type),       intent(inout) :: IST !< A type describing the state of the sea ice
   type(ocean_sfc_state_type), intent(in)    :: OSS !< A structure containing the arrays that describe
@@ -80,9 +82,11 @@ subroutine post_ice_state_diagnostics(IDs, IST, OSS, IOF, dt_slow, Time, G, US, 
   type(SIS_diag_ctrl),        pointer       :: diag !< A structure that is used to regulate diagnostic output
   type(ML_CS),       optional,intent(inout) :: ML   !< Control structure for the ML model(s) !WG
   logical,           optional,intent(in)    :: do_ML !WG
+  logical,           optional,intent(in)    :: Lecomte_density !WG
 
   ! Local variables
   real, dimension(G%isc:G%iec,G%jsc:G%jec) :: mass, mass_ice, mass_snow ! Masses per unit area [R Z ~> kg m-2]
+  real, dimension(G%isc:G%iec,G%jsc:G%jec) :: thk_snow ! Snow thickness per unit area [Z ~> m]
   real, dimension(G%isc:G%iec,G%jsc:G%jec) :: vol_ice ! Nominal sea ice volume per unit grid area [Z ~> m]
   real, dimension(G%isc:G%iec,G%jsc:G%jec) :: tmp2d   ! A local temporary variable, here in [Q R Z ~> J m-2].
   real, dimension(SZI_(G),SZJ_(G),IG%CatIce,IG%NkIce) :: &
@@ -107,6 +111,15 @@ subroutine post_ice_state_diagnostics(IDs, IST, OSS, IOF, dt_slow, Time, G, US, 
   integer :: i, j, k, l, m, isc, iec, jsc, jec, ncat, NkIce
   real    :: nsteps_i !WG
   real, dimension(SZI_(G),SZJ_(G)) :: sit !WG
+  !WG
+  integer :: year, month, day, hour, minute, second
+  integer :: sec, yr_days, clim_lev
+  real    :: Ks_wind
+  real    :: rho_snow_wind
+  character(len=300) :: filename
+  real, dimension(G%isd:G%ied,G%jsd:G%jed) :: &
+    winds  ! The 3-hourly climatology wind speed computed from
+          ! JRA55-do over 1971-2000 [m s-1].
 
   isc = G%isc ; iec = G%iec ; jsc = G%jsc ; jec = G%jec ; ncat = IG%CatIce
   NkIce = IG%NkIce
@@ -115,18 +128,38 @@ subroutine post_ice_state_diagnostics(IDs, IST, OSS, IOF, dt_slow, Time, G, US, 
   call get_SIS2_thermo_coefs(IST%ITV, ice_salinity=S_col, rho_ice=rho_ice, rho_snow=rho_snow, &
                              spec_thermo_salin=spec_thermo_sal)
 
+  !!! WG Start !!!
+  if (Lecomte_density) then
+    year = 0; month = 0; day = 0; hour = 0; minute = 0; second = 0
+    sec = 0; yr_days = 0; winds = 0.0
+    call get_date(Time, year, month, day, hour, minute, second)
+    call get_time(Time - set_date(year, 1, 1, 0, 0, 0), sec, yr_days)
+    ! Climatology index (0-based) = day-of-year*8 + 3-hourly bin; +1 for the Fortran 1-based timelevel.
+    clim_lev = yr_days*8 + sec/10800 + 1
+    write(filename, "(A,I3.3,A)") "/scratch/cimes/wg4031/DAMPEn/FORCING/JRA/raw/JRA55_3hr_climatology_windspeed_1971-2000_OM4grid.nc"
+    call MOM_read_data(filename=trim(filename), fieldname='speed', data=winds, MOM_Domain=G%Domain, timelevel=clim_lev, global_file=.true.)
+  endif
+  !!! WG End !!!
+
   ! Sum the concentration weighted mass for diagnostics.
   if ((IDs%id_mi>0) .or. (IDs%id_mib>0) .or. (IDs%id_simass>0) .or. (IDs%id_sisnmass>0) .or. &
       (IDs%id_sivol>0)) then
     Spec_vol_ice = 1.0 / rho_ice
     mass_ice(:,:) = 0.0
     mass_snow(:,:) = 0.0
+    thk_snow(:,:) = 0.0
     mass(:,:) = 0.0
     vol_ice(:,:) = 0.0
     !$OMP parallel do default(shared)
     do j=jsc,jec ; do k=1,ncat ; do i=isc,iec
       mass_ice(i,j) = mass_ice(i,j) + IST%mH_ice(i,j,k)*IST%part_size(i,j,k)
       mass_snow(i,j) = mass_snow(i,j) + IST%mH_snow(i,j,k)*IST%part_size(i,j,k)
+      if (Lecomte_density) then 
+        rho_snow_wind = (44.6 * winds(i,j) + 174.0) * US%kg_m3_to_R
+        thk_snow(i,j) = mass_snow(i,j) / rho_snow_wind
+      else
+        thk_snow(i,j) = mass_snow(i,j) / rho_snow
+      endif
       mass(i,j) = mass_ice(i,j) + mass_snow(i,j)
       vol_ice(i,j) = mass_ice(i,j) * Spec_vol_ice
     enddo ; enddo ; enddo
@@ -135,6 +168,8 @@ subroutine post_ice_state_diagnostics(IDs, IST, OSS, IOF, dt_slow, Time, G, US, 
     if (IDs%id_sisnmass>0) call post_data(IDs%id_sisnmass, mass_snow, diag)
     if (IDs%id_mi>0) call post_data(IDs%id_mi, mass, diag)
     if (IDs%id_sivol>0) call post_data(IDs%id_sivol, vol_ice, diag)
+    if (IDs%id_sisnthick>0) call post_data(IDs%id_sisnthick, thk_snow, diag)
+    if (IDs%id_hs>0) call post_data(IDs%id_hs, thk_snow, diag)
 
     if (IDs%id_mib>0) then
       if (associated(IOF%mass_berg)) then ; do j=jsc,jec ; do i=isc,iec
@@ -220,10 +255,6 @@ subroutine post_ice_state_diagnostics(IDs, IST, OSS, IOF, dt_slow, Time, G, US, 
   endif
   if (IDs%id_hp>0) call post_avg(IDs%id_hp, IST%mH_pond, IST%part_size(:,:,1:), & ! mw/new
                                  diag, G=G, scale=1.0/(1e3*US%kg_m3_to_R), wtd=.true.) ! rho_water=1e3 [kg m-3]
-  if (IDs%id_hs>0) call post_avg(IDs%id_hs, IST%mH_snow, IST%part_size(:,:,1:), &
-                                 diag, G=G, scale=1.0/Rho_snow, wtd=.true.)
-  if (IDs%id_sisnthick>0) call post_avg(IDs%id_sisnthick, IST%mH_snow, IST%part_size(:,:,1:), &
-                                 diag, G=G, scale=1.0/Rho_snow, wtd=.true.)
   if (IDs%id_hi>0) call post_avg(IDs%id_hi, IST%mH_ice, IST%part_size(:,:,1:), &
                                  diag, G=G, scale=1.0/Rho_ice, wtd=.true.)
   if (IDs%id_sithick>0) call post_avg(IDs%id_sithick, IST%mH_ice, IST%part_size(:,:,1:), &
