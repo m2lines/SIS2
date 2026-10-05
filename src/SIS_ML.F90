@@ -483,7 +483,7 @@ subroutine ML_inference(IST, G, IG, ML, dt_slow)
   real    :: dsic_std, cn1_std, cn2_std, cn3_std, cn4_std, cn5_std
   
   !normalization statistics for both networks
-  if (ML%ML_CPL == .false.) then
+  if (.not. ML%ML_CPL) then
      !CNN stats
      sic_mu = 0.351881980286515
      sst_mu = 2.7164749450877377
